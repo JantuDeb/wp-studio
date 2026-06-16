@@ -1,9 +1,9 @@
+import { Notice, SelectControl, TextareaControl } from '@wordpress/components';
 import { useI18n } from '@wordpress/react-i18n';
 import { useMemo, useState } from 'react';
 import Button from 'src/components/button';
 import PasswordControl from 'src/components/password-control';
 import TextControl from 'src/components/text-control';
-import { cx } from 'src/lib/cx';
 import { getIpcApi } from 'src/lib/get-ipc-api';
 import type {
 	SyncConnection,
@@ -238,40 +238,29 @@ export function SelfHostedConnectionWizard( {
 					/>
 
 					<div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-						<label className="flex flex-col gap-2 text-sm font-medium text-frame-text">
-							{ __( 'Environment type' ) }
-							<select
-								value={ environmentType }
-								onChange={ ( event ) =>
-									setEnvironmentType( event.target.value as SyncEnvironmentType )
-								}
-								className="h-10 px-3 rounded-sm border border-frame-border bg-frame-surface text-frame-text outline-none focus:border-a8c-blue-50"
-							>
-								{ ENVIRONMENT_TYPES.map( ( option ) => (
-									<option key={ option.value } value={ option.value }>
-										{ option.label }
-									</option>
-								) ) }
-							</select>
-						</label>
+						<SelectControl< SyncEnvironmentType >
+							label={ __( 'Environment type' ) }
+							value={ environmentType }
+							onChange={ setEnvironmentType }
+							options={ ENVIRONMENT_TYPES }
+							__next40pxDefaultSize
+							__nextHasNoMarginBottom
+						/>
 
-						<label className="flex flex-col gap-2 text-sm font-medium text-frame-text">
-							{ __( 'Sync mode' ) }
-							<select
-								value={ syncMode }
-								onChange={ ( event ) => {
-									setSyncMode( event.target.value as SelfHostedMode );
-									setStatus( { type: 'idle', message: '' } );
-								} }
-								className="h-10 px-3 rounded-sm border border-frame-border bg-frame-surface text-frame-text outline-none focus:border-a8c-blue-50"
-							>
-								{ SELF_HOSTED_MODES.map( ( mode ) => (
-									<option key={ mode.value } value={ mode.value }>
-										{ mode.label }
-									</option>
-								) ) }
-							</select>
-						</label>
+						<SelectControl< SelfHostedMode >
+							label={ __( 'Sync mode' ) }
+							value={ syncMode }
+							onChange={ ( value ) => {
+								setSyncMode( value );
+								setStatus( { type: 'idle', message: '' } );
+							} }
+							options={ SELF_HOSTED_MODES.map( ( mode ) => ( {
+								label: mode.label,
+								value: mode.value,
+							} ) ) }
+							__next40pxDefaultSize
+							__nextHasNoMarginBottom
+						/>
 					</div>
 
 					{ selectedMode && (
@@ -320,14 +309,13 @@ export function SelfHostedConnectionWizard( {
 								value={ wpCliPath }
 								onChange={ setWpCliPath }
 							/>
-							<label className="md:col-span-2 flex flex-col gap-2 text-sm font-medium text-frame-text">
-								{ __( 'Private key text' ) }
-								<textarea
-									value={ privateKeyText }
-									onChange={ ( event ) => setPrivateKeyText( event.target.value ) }
-									className="min-h-24 px-3 py-2 rounded-sm border border-frame-border bg-frame-surface text-frame-text outline-none focus:border-a8c-blue-50"
-								/>
-							</label>
+							<TextareaControl
+								label={ __( 'Private key text' ) }
+								value={ privateKeyText }
+								onChange={ setPrivateKeyText }
+								className="md:col-span-2"
+								__nextHasNoMarginBottom
+							/>
 						</div>
 					) }
 
@@ -339,23 +327,20 @@ export function SelfHostedConnectionWizard( {
 					) }
 
 					{ syncMode !== 'rest-content' && (
-						<div className="rounded-sm border border-frame-border bg-frame-surface px-4 py-3 text-sm text-frame-text-secondary">
+						<Notice status="info" isDismissible={ false }>
 							{ __(
 								'Connection testing for this mode will be added with the full-sync implementation.'
 							) }
-						</div>
+						</Notice>
 					) }
 
 					{ status.message && (
-						<div
-							className={ cx(
-								'rounded-sm border px-4 py-3 text-sm',
-								status.type === 'success' && 'border-frame-theme bg-frame-theme/10 text-frame-text',
-								status.type === 'error' && 'border-frame-error bg-frame-error/10 text-frame-text'
-							) }
+						<Notice
+							status={ status.type === 'success' ? 'success' : 'error' }
+							isDismissible={ false }
 						>
 							{ status.message }
-						</div>
+						</Notice>
 					) }
 				</div>
 			</div>

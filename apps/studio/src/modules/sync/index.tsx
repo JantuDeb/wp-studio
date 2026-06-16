@@ -1,3 +1,4 @@
+import { CheckboxControl, Spinner } from '@wordpress/components';
 import { check, Icon } from '@wordpress/icons';
 import { sprintf } from '@wordpress/i18n';
 import { useI18n } from '@wordpress/react-i18n';
@@ -278,7 +279,10 @@ function ContentPushPickerModal( {
 				</div>
 				<div className="flex-1 min-h-0 overflow-y-auto px-8 py-4">
 					{ isLoading ? (
-						<div className="text-sm text-frame-text-secondary">{ __( 'Loading content…' ) }</div>
+						<div className="flex items-center gap-2 text-sm text-frame-text-secondary">
+							<Spinner className="!mt-0 [&>circle]:stroke-frame-text-secondary" />
+							{ __( 'Loading content…' ) }
+						</div>
 					) : items.length === 0 ? (
 						<div className="text-sm text-frame-text-secondary">
 							{ __( 'No posts or pages were found.' ) }
@@ -288,15 +292,15 @@ function ContentPushPickerModal( {
 							{ items.map( ( item ) => {
 								const key = `${ item.type }:${ item.id }`;
 								return (
-									<label
+									<div
 										key={ key }
 										className="flex items-start gap-3 rounded-sm border border-frame-border bg-frame-surface p-3"
 									>
-										<input
-											type="checkbox"
+										<CheckboxControl
 											checked={ selectedKeys.has( key ) }
 											onChange={ () => toggleItem( item ) }
-											className="mt-1"
+											__nextHasNoMarginBottom
+											aria-label={ item.title }
 										/>
 										<span className="min-w-0">
 											<span className="block text-sm font-medium text-frame-text truncate">
@@ -317,7 +321,7 @@ function ContentPushPickerModal( {
 												</span>
 											) }
 										</span>
-									</label>
+									</div>
 								);
 							} ) }
 						</div>
