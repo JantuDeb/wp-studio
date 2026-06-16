@@ -71,8 +71,47 @@ export const syncSupportValues = [
 
 export type SyncSupport = ( typeof syncSupportValues )[ number ];
 
+export const syncProviderValues = [
+	'wpcom',
+	'self-hosted-rest',
+	'self-hosted-ssh',
+	'self-hosted-connector',
+] as const;
+
+export const syncProviderSchema = z.enum( syncProviderValues );
+export type SyncProviderType = z.infer< typeof syncProviderSchema >;
+
+export const syncEnvironmentTypeValues = [ 'production', 'staging', 'development' ] as const;
+
+export const syncEnvironmentTypeSchema = z.enum( syncEnvironmentTypeValues );
+export type SyncEnvironmentType = z.infer< typeof syncEnvironmentTypeSchema >;
+
+export const syncModeValues = [
+	'wpcom',
+	'rest-content',
+	'ssh-wp-cli',
+	'connector-plugin',
+] as const;
+
+export const syncModeSchema = z.enum( syncModeValues );
+export type SyncMode = z.infer< typeof syncModeSchema >;
+
+export const syncConnectionCapabilitiesSchema = z.object( {
+	canPull: z.boolean().default( false ),
+	canPush: z.boolean().default( false ),
+	canPushToProduction: z.boolean().default( false ),
+	canSyncContent: z.boolean().default( false ),
+	canSyncDatabase: z.boolean().default( false ),
+	canSyncFiles: z.boolean().default( false ),
+	requiresBackupBeforePush: z.boolean().default( false ),
+	requiresDryRunBeforeProductionPush: z.boolean().default( false ),
+} );
+
+export type SyncConnectionCapabilities = z.infer< typeof syncConnectionCapabilitiesSchema >;
+
 // Sync site representation
 export const syncSiteSchema = z.object( {
+	provider: z.literal( 'wpcom' ).optional(),
 	id: z.number(),
 	localSiteId: z.string(),
 	name: z.string(),
@@ -89,6 +128,67 @@ export const syncSiteSchema = z.object( {
 } );
 
 export type SyncSite = z.infer< typeof syncSiteSchema >;
+
+export const selfHostedRestAuthSchema = z.object( {
+	username: z.string(),
+	applicationPassword: z.string(),
+} );
+
+export const selfHostedSshAuthSchema = z.object( {
+	host: z.string(),
+	port: z.number().int().positive().default( 22 ),
+	username: z.string(),
+	privateKeyPath: z.string().optional(),
+	privateKeyText: z.string().optional(),
+	remoteWordPressPath: z.string(),
+	wpCliPath: z.string().optional(),
+} );
+
+export const selfHostedConnectorAuthSchema = z.object( {
+	token: z.string(),
+} );
+
+const syncConnectionBaseSchema = z.object( {
+	id: z.string(),
+	localSiteId: z.string(),
+	siteUrl: z.string().url(),
+	environmentType: syncEnvironmentTypeSchema,
+	lastPullTimestamp: z.string().nullable().default( null ),
+	lastPushTimestamp: z.string().nullable().default( null ),
+	capabilities: syncConnectionCapabilitiesSchema,
+	createdAt: z.string().optional(),
+	updatedAt: z.string().optional(),
+} );
+
+export const selfHostedRestConnectionSchema = syncConnectionBaseSchema.extend( {
+	provider: z.literal( 'self-hosted-rest' ),
+	syncMode: z.literal( 'rest-content' ),
+	auth: selfHostedRestAuthSchema,
+} );
+
+export const selfHostedSshConnectionSchema = syncConnectionBaseSchema.extend( {
+	provider: z.literal( 'self-hosted-ssh' ),
+	syncMode: z.literal( 'ssh-wp-cli' ),
+	auth: selfHostedSshAuthSchema,
+} );
+
+export const selfHostedConnectorConnectionSchema = syncConnectionBaseSchema.extend( {
+	provider: z.literal( 'self-hosted-connector' ),
+	syncMode: z.literal( 'connector-plugin' ),
+	auth: selfHostedConnectorAuthSchema,
+} );
+
+export const syncConnectionSchema = z.union( [
+	syncSiteSchema,
+	selfHostedRestConnectionSchema,
+	selfHostedSshConnectionSchema,
+	selfHostedConnectorConnectionSchema,
+] );
+
+export type SelfHostedRestConnection = z.infer< typeof selfHostedRestConnectionSchema >;
+export type SelfHostedSshConnection = z.infer< typeof selfHostedSshConnectionSchema >;
+export type SelfHostedConnectorConnection = z.infer< typeof selfHostedConnectorConnectionSchema >;
+export type SyncConnection = z.infer< typeof syncConnectionSchema >;
 
 // Pull backup API schemas
 export const pullSiteResponseSchema = z.object( {

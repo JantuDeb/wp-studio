@@ -3,7 +3,7 @@ import path from 'path';
 import { readFile, writeFile } from 'atomically';
 import { z } from 'zod';
 import { LOCKFILE_STALE_TIME, LOCKFILE_WAIT_TIME, SHARED_CONFIG_LOCKFILE_NAME } from '../constants';
-import { syncSiteSchema } from '../types/sync';
+import { syncConnectionSchema, syncSiteSchema } from '../types/sync';
 import { authTokenSchema, type StoredAuthToken } from './auth-token-schema';
 import { hideDirectoryOnWindows } from './hide-dir-windows';
 import { lockFileAsync, unlockFileAsync } from './lockfile';
@@ -45,6 +45,10 @@ export const sharedConfigSchema = z
 		// Both Studio and the Studio CLI read and write this field through
 		// the helpers in `./connected-sites.ts`.
 		connectedWpcomSites: z.record( z.string(), z.array( syncSiteSchema ) ).optional(),
+		// Generic sync connections keyed by local site id. This is intentionally
+		// separate from `connectedWpcomSites` so self-hosted connections can exist
+		// without WordPress.com authentication.
+		syncConnections: z.record( z.string(), z.array( syncConnectionSchema ) ).optional(),
 	} )
 	.loose();
 

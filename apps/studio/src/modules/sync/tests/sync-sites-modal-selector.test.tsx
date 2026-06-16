@@ -1,7 +1,7 @@
 // To run tests, execute `npm run test -- src/modules/sync/tests/sync-sites-modal-selector.test.tsx` from the root directory
 import wpcomFactory from '@studio/common/lib/wpcom-factory';
 import wpcomXhrRequest from '@studio/common/lib/wpcom-xhr-request-factory';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import nock from 'nock';
 import { Provider } from 'react-redux';
 import { vi } from 'vitest';
@@ -114,6 +114,23 @@ describe( 'SyncSitesModalSelector', () => {
 				selectedSite={ selectedSite }
 			/>
 		);
+		fireEvent.click( screen.getByText( 'WordPress.com / Pressable' ) );
 		expect( await screen.findByText( 'Find a perfect plan' ) ).toBeInTheDocument();
+	} );
+
+	it( 'shows self-hosted connection fields from the site type chooser', async () => {
+		renderWithProvider(
+			<SyncSitesModalSelector
+				onRequestClose={ vi.fn() }
+				onConnect={ vi.fn() }
+				selectedSite={ selectedSite }
+			/>
+		);
+
+		fireEvent.click( screen.getByText( 'Self-hosted WordPress' ) );
+
+		expect( await screen.findByLabelText( 'Site URL' ) ).toBeInTheDocument();
+		expect( screen.getByLabelText( 'Environment type' ) ).toBeInTheDocument();
+		expect( screen.getByLabelText( 'Sync mode' ) ).toBeInTheDocument();
 	} );
 } );
