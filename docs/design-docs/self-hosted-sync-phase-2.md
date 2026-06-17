@@ -63,8 +63,9 @@ Included:
 - [x] Fetch local categories and tags.
 - [x] Create or reuse remote categories and tags by slug.
 - [x] Detect media used as featured images or exact URLs in post/page content.
+- [x] Detect media used through generated image size URLs from `srcset`.
 - [x] Upload detected media to the remote site.
-- [x] Replace exact local media URLs in content and excerpts with uploaded remote URLs.
+- [x] Replace local original, generated-size, and attachment-link URLs in content and excerpts with uploaded remote URLs.
 - [x] Let users select which local posts/pages to push.
 - [x] Preview whether selected posts/pages will create, update, or conflict before pushing.
 - [x] Block pushes that would overwrite unmapped remote content with the same slug.
@@ -74,6 +75,6 @@ Included:
 
 Still pending:
 
-- [ ] Rich media reference detection for generated image sizes, galleries, blocks, and attachment links that do not contain the exact original URL.
-- [ ] Featured image metadata parity beyond the uploaded attachment fields.
+- [ ] Rich media reference detection for galleries, block attributes, and attachment references that do not contain a known local media URL.
+- [ ] Featured image metadata parity beyond title, alt text, caption, and description.
 - [ ] Tests for the main-process content push pipeline.

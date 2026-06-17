@@ -41,6 +41,13 @@ import { executeCliCommand } from 'src/modules/cli/lib/execute-command';
 import { exportSite } from 'src/modules/import-export/lib/ipc-handlers';
 import { SiteServer } from 'src/site-server';
 import { SyncOption } from 'src/types';
+import {
+	buildMediaUrlReplacementMap,
+	getUsedMediaIdsFromContent,
+	mergeMediaUrlReplacementMaps,
+	replaceMediaUrls,
+	type SyncMediaItem,
+} from './self-hosted-media-sync';
 
 type LocalRenderedField = {
 	raw?: string;
@@ -53,7 +60,7 @@ type LocalTerm = {
 	slug: string;
 };
 
-type LocalMedia = {
+type LocalMedia = SyncMediaItem & {
 	id: number;
 	source_url: string;
 	mime_type?: string;
@@ -80,6 +87,8 @@ type RemoteEntity = {
 	id: number;
 	slug?: string;
 	source_url?: string;
+	link?: string;
+	media_details?: SyncMediaItem[ 'media_details' ];
 };
 
 type LocalContentSelectionItem = {
@@ -848,30 +857,6 @@ async function ensureRemoteTerm(
 	return created.id;
 }
 
-function getUsedMediaIds(
-	contentItems: LocalContentItem[],
-	mediaItems: LocalMedia[]
-): Set< number > {
-	const usedMediaIds = new Set< number >();
-	const contentBlob = contentItems
-		.map( ( item ) => `${ getRawField( item.content ) }\n${ getRawField( item.excerpt ) }` )
-		.join( '\n' );
-
-	for ( const item of contentItems ) {
-		if ( item.featured_media ) {
-			usedMediaIds.add( item.featured_media );
-		}
-	}
-
-	for ( const media of mediaItems ) {
-		if ( media.source_url && contentBlob.includes( media.source_url ) ) {
-			usedMediaIds.add( media.id );
-		}
-	}
-
-	return usedMediaIds;
-}
-
 async function uploadRemoteMedia(
 	connection: z.infer< typeof selfHostedRestConnectionSchema >,
 	media: LocalMedia
@@ -911,27 +896,26 @@ async function uploadRemoteMedia(
 		},
 	} );
 
-	await remoteRestRequest( connection, `/wp/v2/media/${ uploaded.id }`, {
-		method: 'POST',
-		body: {
-			title: getRawField( media.title ) || filename,
-			alt_text: media.alt_text ?? '',
-			caption: getRawField( media.caption ),
-			description: getRawField( media.description ),
-		},
-	} );
+	const updated = await remoteRestRequest< RemoteEntity >(
+		connection,
+		`/wp/v2/media/${ uploaded.id }`,
+		{
+			method: 'POST',
+			body: {
+				title: getRawField( media.title ) || filename,
+				alt_text: media.alt_text ?? '',
+				caption: getRawField( media.caption ),
+				description: getRawField( media.description ),
+			},
+		}
+	);
 
 	await storeRemotePostId( connection.localSiteId, media.id, connection.id, uploaded.id );
 
-	return uploaded;
-}
-
-function replaceMediaUrls( value: string, uploadedMediaByLocalUrl: Map< string, string > ): string {
-	let nextValue = value;
-	for ( const [ localUrl, remoteUrl ] of uploadedMediaByLocalUrl ) {
-		nextValue = nextValue.split( localUrl ).join( remoteUrl );
-	}
-	return nextValue;
+	return {
+		...uploaded,
+		...updated,
+	};
 }
 
 async function getStoredRemotePostId(
@@ -1105,21 +1089,27 @@ export async function pushSelfHostedRestContent(
 		}
 	}
 
-	const usedMediaIds = getUsedMediaIds( contentItems, mediaItems );
+	const usedMediaIds = getUsedMediaIdsFromContent(
+		contentItems.flatMap( ( item ) => [
+			getRawField( item.content ),
+			getRawField( item.excerpt ),
+		] ),
+		mediaItems,
+		contentItems.map( ( item ) => item.featured_media ?? 0 )
+	);
 	const mediaById = new Map( mediaItems.map( ( media ) => [ media.id, media ] ) );
 	const remoteMediaByLocalId = new Map< number, RemoteEntity >();
-	const uploadedMediaByLocalUrl = new Map< string, string >();
+	const mediaUrlReplacementMaps: Array< Map< string, string > > = [];
 
 	for ( const localMediaId of usedMediaIds ) {
 		const media = mediaById.get( localMediaId );
 		if ( media ) {
 			const uploaded = await uploadRemoteMedia( parsed, media );
 			remoteMediaByLocalId.set( localMediaId, uploaded );
-			if ( media.source_url && uploaded.source_url ) {
-				uploadedMediaByLocalUrl.set( media.source_url, uploaded.source_url );
-			}
+			mediaUrlReplacementMaps.push( buildMediaUrlReplacementMap( media, uploaded ) );
 		}
 	}
+	const uploadedMediaByLocalUrl = mergeMediaUrlReplacementMaps( mediaUrlReplacementMaps );
 
 	const summary = { posts: 0, pages: 0, media: remoteMediaByLocalId.size, categories: 0, tags: 0 };
 	summary.categories = remoteCategoryIdsByLocalId.size;
