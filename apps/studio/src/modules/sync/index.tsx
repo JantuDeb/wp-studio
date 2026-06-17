@@ -167,13 +167,17 @@ function SelfHostedConnectionsList( {
 	onDisconnect,
 	onEdit,
 	onChooseContent,
+	onPullSshSite,
 	pushingConnectionId,
+	pullingConnectionId,
 }: {
 	connections: SyncConnection[];
 	onDisconnect: ( connectionId: string ) => void;
 	onEdit: ( connection: SelfHostedSyncConnection ) => void;
 	onChooseContent: ( connectionId: string ) => void;
+	onPullSshSite: ( connection: SelfHostedSyncConnection ) => void;
 	pushingConnectionId: string | null;
+	pullingConnectionId: string | null;
 } ) {
 	const { __ } = useI18n();
 	const selfHostedConnections = connections.filter(
@@ -226,6 +230,15 @@ function SelfHostedConnectionsList( {
 								{ pushingConnectionId === connection.id
 									? __( 'Pushing…' )
 									: __( 'Choose content' ) }
+							</Button>
+							<Button
+								variant="secondary"
+								disabled={
+									connection.provider !== 'self-hosted-ssh' || pullingConnectionId === connection.id
+								}
+								onClick={ () => onPullSshSite( connection ) }
+							>
+								{ pullingConnectionId === connection.id ? __( 'Pulling…' ) : __( 'Pull to local' ) }
 							</Button>
 						</div>
 					</div>
@@ -441,6 +454,7 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 	const [ disconnectSite ] = useDisconnectSiteMutation();
 	const [ syncConnections, setSyncConnections ] = useState< SyncConnection[] >( [] );
 	const [ pushingConnectionId, setPushingConnectionId ] = useState< string | null >( null );
+	const [ pullingConnectionId, setPullingConnectionId ] = useState< string | null >( null );
 	const [ pickingConnectionId, setPickingConnectionId ] = useState< string | null >( null );
 	const [ contentSelectionItems, setContentSelectionItems ] = useState< ContentSelectionItem[] >(
 		[]
@@ -581,6 +595,39 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 		}
 	};
 
+	const handlePullSelfHostedSshSite = async ( connection: SelfHostedSyncConnection ) => {
+		const CANCEL_BUTTON_INDEX = 1;
+		const PULL_BUTTON_INDEX = 0;
+		const { response } = await getIpcApi().showMessageBox( {
+			message: __( 'Pull remote site into Studio?' ),
+			detail: __(
+				'Studio will download the remote database and wp-content from the configured WordPress path and import them into this local site. This can replace local content, uploads, themes, plugins, and database changes.'
+			),
+			buttons: [ __( 'Pull to local' ), __( 'Cancel' ) ],
+			cancelId: CANCEL_BUTTON_INDEX,
+		} );
+
+		if ( response !== PULL_BUTTON_INDEX ) {
+			return;
+		}
+
+		setPullingConnectionId( connection.id );
+		try {
+			await getIpcApi().pullSelfHostedSshSite( selectedSite.id, connection.id );
+			getIpcApi().showNotification( {
+				title: __( 'Site pulled' ),
+				body: __( 'The remote site was imported into this local Studio site.' ),
+			} );
+		} catch ( error ) {
+			getIpcApi().showErrorMessageBox( {
+				title: __( 'Failed to pull site' ),
+				message: error instanceof Error ? error.message : __( 'Please try again.' ),
+			} );
+		} finally {
+			setPullingConnectionId( null );
+		}
+	};
+
 	const handleSiteSelection = async ( selectedSiteFromList: SyncSite ) => {
 		if ( reduxModalMode === 'push' || reduxModalMode === 'pull' ) {
 			dispatch( connectedSitesActions.openModal( reduxModalMode ) );
@@ -610,7 +657,9 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 							onDisconnect={ handleDisconnectSelfHosted }
 							onEdit={ setEditingSelfHostedConnection }
 							onChooseContent={ handleChooseSelfHostedRestContent }
+							onPullSshSite={ handlePullSelfHostedSshSite }
 							pushingConnectionId={ pushingConnectionId }
+							pullingConnectionId={ pullingConnectionId }
 						/>
 					</div>
 					<div className="sticky bottom-0 bg-frame/[0.8] backdrop-blur-sm w-full px-8 py-6 mt-auto">

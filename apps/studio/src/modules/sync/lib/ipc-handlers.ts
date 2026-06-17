@@ -28,7 +28,7 @@ import {
 	type SelfHostedRestConnectionWithAuth,
 	type SelfHostedSshConnectionWithAuth,
 } from '@studio/common/types/sync';
-import { Client, type ConnectConfig } from 'ssh2';
+import { Client, type ConnectConfig, type SFTPWrapper } from 'ssh2';
 import { Upload } from 'tus-js-client';
 import { z } from 'zod';
 import {
@@ -42,7 +42,7 @@ import { getSyncBackupTempPath } from 'src/lib/get-sync-backup-temp-path';
 import { getAuthenticationToken } from 'src/lib/oauth';
 import { fetchSiteRest } from 'src/lib/wordpress-rest-api';
 import { executeCliCommand } from 'src/modules/cli/lib/execute-command';
-import { exportSite } from 'src/modules/import-export/lib/ipc-handlers';
+import { exportSite, importSite } from 'src/modules/import-export/lib/ipc-handlers';
 import { SiteServer } from 'src/site-server';
 import { SyncOption } from 'src/types';
 import {
@@ -763,10 +763,7 @@ function getSshPreflightCommand( connection: SelfHostedSshConnectionWithAuth ): 
 	].join( ' && ' );
 }
 
-async function runSshCommand(
-	connection: SelfHostedSshConnectionWithAuth,
-	command: string
-): Promise< string > {
+async function connectSshClient( connection: SelfHostedSshConnectionWithAuth ): Promise< Client > {
 	const privateKey = await getSshPrivateKey( connection );
 	const config: ConnectConfig = {
 		host: connection.auth.host,
@@ -788,46 +785,62 @@ async function runSshCommand(
 		const timeout = setTimeout( () => {
 			client.end();
 			reject( new Error( 'SSH connection timed out.' ) );
-		}, 30000 );
+		}, 10000 );
 
 		client
 			.on( 'ready', () => {
-				client.exec( command, ( execError, stream ) => {
-					if ( execError ) {
-						clearTimeout( timeout );
-						client.end();
-						reject( execError );
-						return;
-					}
-
-					let stdout = '';
-					let stderr = '';
-
-					stream
-						.on( 'close', ( code: number | null ) => {
-							clearTimeout( timeout );
-							client.end();
-							if ( code === 0 || code === null ) {
-								resolve( stdout );
-								return;
-							}
-							reject( new Error( stderr.trim() || `Remote command failed with ${ code }.` ) );
-						} )
-						.on( 'data', ( data: Buffer ) => {
-							stdout += data.toString( 'utf8' );
-						} );
-
-					stream.stderr.on( 'data', ( data: Buffer ) => {
-						stderr += data.toString( 'utf8' );
-					} );
-				} );
+				clearTimeout( timeout );
+				resolve( client );
 			} )
 			.on( 'error', ( error ) => {
 				clearTimeout( timeout );
+				client.end();
 				reject( error );
 			} )
 			.connect( config );
 	} );
+}
+
+async function runConnectedSshCommand( client: Client, command: string ): Promise< string > {
+	return new Promise( ( resolve, reject ) => {
+		client.exec( command, ( execError, stream ) => {
+			if ( execError ) {
+				reject( execError );
+				return;
+			}
+
+			let stdout = '';
+			let stderr = '';
+
+			stream
+				.on( 'close', ( code: number | null ) => {
+					if ( code === 0 || code === null ) {
+						resolve( stdout );
+						return;
+					}
+					reject( new Error( stderr.trim() || `Remote command failed with ${ code }.` ) );
+				} )
+				.on( 'data', ( data: Buffer ) => {
+					stdout += data.toString( 'utf8' );
+				} );
+
+			stream.stderr.on( 'data', ( data: Buffer ) => {
+				stderr += data.toString( 'utf8' );
+			} );
+		} );
+	} );
+}
+
+async function runSshCommand(
+	connection: SelfHostedSshConnectionWithAuth,
+	command: string
+): Promise< string > {
+	const client = await connectSshClient( connection );
+	try {
+		return await runConnectedSshCommand( client, command );
+	} finally {
+		client.end();
+	}
 }
 
 async function testSelfHostedSshConnection(
@@ -847,6 +860,95 @@ async function testSelfHostedSshConnection(
 			ok: false,
 			message: error instanceof Error ? error.message : 'Unable to connect over SSH.',
 		};
+	}
+}
+
+function getRemoteStudioSyncWorkDir( connection: SelfHostedSshConnectionWithAuth ): string {
+	const timestamp = Date.now();
+	return `${ connection.auth.remoteWordPressPath.replace(
+		/\/+$/,
+		''
+	) }/.studio-sync-${ timestamp }-${ randomUUID() }`;
+}
+
+function getSshPullArchiveCommand(
+	connection: SelfHostedSshConnectionWithAuth,
+	remoteWorkDir: string
+): string {
+	const wpCliPath = connection.auth.wpCliPath?.trim() || 'wp';
+	const remotePath = quoteRemoteShellArg( connection.auth.remoteWordPressPath );
+	const workDir = quoteRemoteShellArg( remoteWorkDir );
+	const archivePath = quoteRemoteShellArg( `${ remoteWorkDir }/studio-pull.tar.gz` );
+	return [
+		`set -e`,
+		`test -d ${ remotePath }`,
+		`mkdir -p ${ workDir }/app/sql ${ workDir }/app/public`,
+		`cd ${ remotePath }`,
+		`${ quoteRemoteShellArg(
+			wpCliPath
+		) } db export ${ workDir }/app/sql/database.sql --path=${ remotePath } --add-drop-table`,
+		`cp -a ${ remotePath }/wp-content ${ workDir }/app/public/wp-content`,
+		`tar -czf ${ archivePath } -C ${ workDir } app`,
+		`printf '%s\\n' ${ archivePath }`,
+	].join( ' && ' );
+}
+
+async function getSftpClient( client: Client ): Promise< SFTPWrapper > {
+	return new Promise( ( resolve, reject ) => {
+		client.sftp( ( error, sftp ) => {
+			if ( error ) {
+				reject( error );
+				return;
+			}
+			resolve( sftp );
+		} );
+	} );
+}
+
+async function downloadSftpFile(
+	sftp: SFTPWrapper,
+	remotePath: string,
+	localPath: string
+): Promise< void > {
+	return new Promise( ( resolve, reject ) => {
+		sftp.fastGet( remotePath, localPath, ( error ) => {
+			if ( error ) {
+				reject( error );
+				return;
+			}
+			resolve();
+		} );
+	} );
+}
+
+async function createSelfHostedSshPullArchive(
+	connection: SelfHostedSshConnectionWithAuth,
+	localSiteId: string
+): Promise< { archivePath: string; remoteArchivePath: string } > {
+	const client = await connectSshClient( connection );
+	const remoteWorkDir = getRemoteStudioSyncWorkDir( connection );
+	const tempDir = path.join( app.getPath( 'temp' ), 'com.wordpress.studio', 'self-hosted-pulls' );
+	await fsPromises.mkdir( tempDir, { recursive: true } );
+	const archivePath = path.join( tempDir, `self-hosted-${ localSiteId }-${ randomUUID() }.tar.gz` );
+	let remoteArchivePath = '';
+
+	try {
+		remoteArchivePath = (
+			await runConnectedSshCommand( client, getSshPullArchiveCommand( connection, remoteWorkDir ) )
+		).trim();
+		if ( ! remoteArchivePath ) {
+			throw new Error( 'Remote archive path was not returned.' );
+		}
+		const sftp = await getSftpClient( client );
+		await downloadSftpFile( sftp, remoteArchivePath, archivePath );
+		sftp.end();
+		return { archivePath, remoteArchivePath };
+	} finally {
+		await runConnectedSshCommand(
+			client,
+			`rm -rf ${ quoteRemoteShellArg( remoteWorkDir ) }`
+		).catch( () => undefined );
+		client.end();
 	}
 }
 
@@ -1357,4 +1459,28 @@ export async function pushSelfHostedRestContent(
 	}
 
 	return summary;
+}
+
+export async function pullSelfHostedSshSite(
+	event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string
+): Promise< { archivePath: string; remoteArchivePath: string } > {
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+	const { archivePath, remoteArchivePath } = await createSelfHostedSshPullArchive(
+		parsed,
+		localSiteId
+	);
+
+	await importSite( event, localSiteId, archivePath, {
+		alwaysStartServer: true,
+		removeBackupOnComplete: true,
+		showErrorModal: true,
+		showNotification: true,
+	} );
+
+	return { archivePath, remoteArchivePath };
 }

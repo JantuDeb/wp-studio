@@ -202,6 +202,7 @@ export {
 	listSelfHostedRestContent,
 	pauseSyncUpload,
 	previewSelfHostedRestContentPush,
+	pullSelfHostedSshSite,
 	pullSiteFromLive,
 	pushSelfHostedRestContent,
 	pushArchive,

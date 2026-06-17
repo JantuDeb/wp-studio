@@ -147,6 +147,8 @@ const api: IpcApi = {
 		ipcRendererInvoke( 'previewSelfHostedRestContentPush', localSiteId, connectionId, options ),
 	pushSelfHostedRestContent: ( localSiteId, connectionId, options ) =>
 		ipcRendererInvoke( 'pushSelfHostedRestContent', localSiteId, connectionId, options ),
+	pullSelfHostedSshSite: ( localSiteId, connectionId ) =>
+		ipcRendererInvoke( 'pullSelfHostedSshSite', localSiteId, connectionId ),
 	pullSiteFromLive: ( siteFolder, remoteSiteId ) =>
 		ipcRendererInvoke( 'pullSiteFromLive', siteFolder, remoteSiteId ),
 	addSyncOperation: ( id, status ) => ipcRendererSend( 'addSyncOperation', id, status ),

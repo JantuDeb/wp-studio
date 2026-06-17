@@ -32,7 +32,8 @@ Phase 2 adds a first-class self-hosted connection flow without enabling self-hos
 
 - [ ] REST content push for posts, pages, media, terms, and post meta.
 - [ ] Connector plugin connection testing.
-- [ ] Self-hosted pull or push operations.
+- [x] SSH/WP-CLI pull to local Studio site.
+- [ ] Self-hosted push operations.
 - [ ] Production database push.
 
 ## Guardrails
@@ -44,6 +45,7 @@ Phase 2 adds a first-class self-hosted connection flow without enabling self-hos
 - [x] Self-hosted auth fields are stripped from `shared.json` and stored in encrypted Studio app data.
 - [x] Saved self-hosted connections can be edited to update site metadata or replace credentials.
 - [x] SSH + WP-CLI connection testing verifies password or private-key SSH auth, the remote WordPress path, and `wp core version`.
+- [x] SSH pull downloads database and `wp-content` from the configured WordPress path only.
 
 ## Follow-Up PRs
 
@@ -115,7 +117,28 @@ Included:
 
 Still pending:
 
-- [ ] Pull remote database with `wp db export`.
-- [ ] Archive and download remote `wp-content` parts.
-- [ ] Reuse Studio import code to restore the archive locally.
+- [x] Pull remote database with `wp db export`.
+- [x] Archive and download remote `wp-content` parts.
+- [x] Reuse Studio import code to restore the archive locally.
 - [ ] Staging push with backup and selected restore parts.
+
+## SSH Pull Addendum
+
+The first SSH sync operation pulls a remote site into an existing local Studio site. It does not push local files or database changes to the remote server.
+
+Included:
+
+- [x] Create the remote working directory under the configured WordPress path.
+- [x] Export the remote database with `wp db export`.
+- [x] Copy remote `wp-content` into a Local-compatible archive layout.
+- [x] Download the archive over SFTP.
+- [x] Remove the remote temporary working directory after download.
+- [x] Import the downloaded archive with Studio's existing import flow.
+- [x] Show a confirmation warning before replacing local site content.
+
+Still pending:
+
+- [ ] Selective pull parts for database, plugins, themes, uploads, and other `wp-content` folders.
+- [ ] Progress events for remote export, SFTP download, and import phases.
+- [ ] Remote archive size estimate before download.
+- [ ] Better remote cleanup reporting if cleanup fails.
