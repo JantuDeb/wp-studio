@@ -201,6 +201,7 @@ export {
 	getSyncConnections,
 	listSelfHostedRestContent,
 	pauseSyncUpload,
+	previewSelfHostedRestContentPush,
 	pullSiteFromLive,
 	pushSelfHostedRestContent,
 	pushArchive,

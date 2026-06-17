@@ -66,6 +66,8 @@ Included:
 - [x] Upload detected media to the remote site.
 - [x] Replace exact local media URLs in content and excerpts with uploaded remote URLs.
 - [x] Let users select which local posts/pages to push.
+- [x] Preview whether selected posts/pages will create, update, or conflict before pushing.
+- [x] Block pushes that would overwrite unmapped remote content with the same slug.
 - [x] Create or update remote posts/pages by stored remote ID or slug.
 - [x] Store remote post/page IDs in local post meta after a successful push.
 - [x] Keep pushed posts/pages as drafts unless publish is explicitly requested by code.
@@ -74,6 +76,4 @@ Still pending:
 
 - [ ] Rich media reference detection for generated image sizes, galleries, blocks, and attachment links that do not contain the exact original URL.
 - [ ] Featured image metadata parity beyond the uploaded attachment fields.
-- [ ] Conflict detection before updating an existing remote slug.
-- [ ] User-facing dry run preview.
 - [ ] Tests for the main-process content push pipeline.

@@ -93,6 +93,25 @@ type LocalContentSelectionItem = {
 	hasFeaturedImage: boolean;
 };
 
+type ContentPushPreviewItem = {
+	id: number;
+	type: 'post' | 'page';
+	title: string;
+	slug: string;
+	action: 'create' | 'update' | 'conflict';
+	remoteId: number | null;
+	reason?: string;
+};
+
+type ContentPushPreview = {
+	items: ContentPushPreviewItem[];
+	summary: {
+		create: number;
+		update: number;
+		conflict: number;
+	};
+};
+
 /**
  * Registry to store AbortControllers for ongoing sync operations (push/pull).
  * Key format: `${selectedSiteId}-${remoteSiteId}`
@@ -772,6 +791,18 @@ async function fetchAllLocalContent( localSiteId: string ): Promise< LocalConten
 	];
 }
 
+function filterSelectedContentItems(
+	contentItems: LocalContentItem[],
+	selectedItems?: Array< { id: number; type: 'post' | 'page' } >
+): LocalContentItem[] {
+	const selectedKeys = new Set(
+		selectedItems?.map( ( item ) => `${ item.type }:${ item.id }` ) ?? []
+	);
+	return selectedKeys.size > 0
+		? contentItems.filter( ( item ) => selectedKeys.has( `${ item.type }:${ item.id }` ) )
+		: contentItems;
+}
+
 export async function listSelfHostedRestContent(
 	_event: IpcMainInvokeEvent,
 	localSiteId: string
@@ -817,7 +848,10 @@ async function ensureRemoteTerm(
 	return created.id;
 }
 
-function getUsedMediaIds( contentItems: LocalContentItem[], mediaItems: LocalMedia[] ): Set< number > {
+function getUsedMediaIds(
+	contentItems: LocalContentItem[],
+	mediaItems: LocalMedia[]
+): Set< number > {
 	const usedMediaIds = new Set< number >();
 	const contentBlob = contentItems
 		.map( ( item ) => `${ getRawField( item.content ) }\n${ getRawField( item.excerpt ) }` )
@@ -842,7 +876,11 @@ async function uploadRemoteMedia(
 	connection: z.infer< typeof selfHostedRestConnectionSchema >,
 	media: LocalMedia
 ): Promise< RemoteEntity > {
-	const storedRemoteId = await getStoredRemotePostId( connection.localSiteId, media.id, connection.id );
+	const storedRemoteId = await getStoredRemotePostId(
+		connection.localSiteId,
+		media.id,
+		connection.id
+	);
 	if ( storedRemoteId ) {
 		try {
 			return await remoteRestRequest< RemoteEntity >(
@@ -939,13 +977,17 @@ async function storeRemotePostId(
 	] );
 }
 
-async function findRemoteContentItem(
+async function findRemoteContentMatch(
 	connection: z.infer< typeof selfHostedRestConnectionSchema >,
 	item: LocalContentItem
-): Promise< number | null > {
-	const storedRemoteId = await getStoredRemotePostId( connection.localSiteId, item.id, connection.id );
+): Promise< { remoteId: number | null; source: 'stored' | 'slug' | null } > {
+	const storedRemoteId = await getStoredRemotePostId(
+		connection.localSiteId,
+		item.id,
+		connection.id
+	);
 	if ( storedRemoteId ) {
-		return storedRemoteId;
+		return { remoteId: storedRemoteId, source: 'stored' };
 	}
 
 	const resource = item.type === 'page' ? 'pages' : 'posts';
@@ -953,14 +995,78 @@ async function findRemoteContentItem(
 		connection,
 		`/wp/v2/${ resource }?slug=${ encodeURIComponent( item.slug ) }&status=any&context=edit`
 	);
-	return existing[ 0 ]?.id ?? null;
+	return existing[ 0 ]?.id
+		? { remoteId: existing[ 0 ].id, source: 'slug' }
+		: { remoteId: null, source: null };
+}
+
+async function findRemoteContentItem(
+	connection: z.infer< typeof selfHostedRestConnectionSchema >,
+	item: LocalContentItem
+): Promise< number | null > {
+	const match = await findRemoteContentMatch( connection, item );
+	if ( match.source === 'slug' ) {
+		throw new Error(
+			`Remote ${ item.type } with slug "${ item.slug }" already exists but is not mapped to this local item.`
+		);
+	}
+	return match.remoteId;
+}
+
+export async function previewSelfHostedRestContentPush(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string,
+	options: { selectedItems?: Array< { id: number; type: 'post' | 'page' } > } = {}
+): Promise< ContentPushPreview > {
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const parsed = selfHostedRestConnectionSchema.parse( connection );
+	const allContentItems = await fetchAllLocalContent( localSiteId );
+	const contentItems = filterSelectedContentItems( allContentItems, options.selectedItems );
+	const items: ContentPushPreviewItem[] = [];
+
+	for ( const item of contentItems ) {
+		const match = await findRemoteContentMatch( parsed, item );
+		const base = {
+			id: item.id,
+			type: item.type,
+			title: getRawField( item.title ) || item.slug || `#${ item.id }`,
+			slug: item.slug,
+			remoteId: match.remoteId,
+		};
+
+		if ( match.source === 'stored' ) {
+			items.push( { ...base, action: 'update' } );
+		} else if ( match.source === 'slug' ) {
+			items.push( {
+				...base,
+				action: 'conflict',
+				reason: 'A remote item already uses this slug, but Studio has not mapped it yet.',
+			} );
+		} else {
+			items.push( { ...base, action: 'create' } );
+		}
+	}
+
+	return {
+		items,
+		summary: {
+			create: items.filter( ( item ) => item.action === 'create' ).length,
+			update: items.filter( ( item ) => item.action === 'update' ).length,
+			conflict: items.filter( ( item ) => item.action === 'conflict' ).length,
+		},
+	};
 }
 
 export async function pushSelfHostedRestContent(
 	_event: IpcMainInvokeEvent,
 	localSiteId: string,
 	connectionId: string,
-	options: { publish?: boolean; selectedItems?: Array< { id: number; type: 'post' | 'page' } > } = {}
+	options: {
+		publish?: boolean;
+		selectedItems?: Array< { id: number; type: 'post' | 'page' } >;
+	} = {}
 ): Promise< { posts: number; pages: number; media: number; categories: number; tags: number } > {
 	const connections = await getSyncConnectionsForLocalSite( localSiteId );
 	const connection = connections.find( ( item ) => item.id === connectionId );
@@ -973,13 +1079,7 @@ export async function pushSelfHostedRestContent(
 		fetchAllLocal< LocalMedia >( localSiteId, 'media' ),
 	] );
 
-	const selectedKeys = new Set(
-		options.selectedItems?.map( ( item ) => `${ item.type }:${ item.id }` ) ?? []
-	);
-	const contentItems =
-		selectedKeys.size > 0
-			? allContentItems.filter( ( item ) => selectedKeys.has( `${ item.type }:${ item.id }` ) )
-			: allContentItems;
+	const contentItems = filterSelectedContentItems( allContentItems, options.selectedItems );
 
 	const categoriesById = mapTermsById( categories );
 	const tagsById = mapTermsById( tags );

@@ -1,6 +1,6 @@
-import { CheckboxControl, Spinner } from '@wordpress/components';
-import { check, Icon } from '@wordpress/icons';
+import { CheckboxControl, Notice, Spinner } from '@wordpress/components';
 import { sprintf } from '@wordpress/i18n';
+import { check, Icon } from '@wordpress/icons';
 import { useI18n } from '@wordpress/react-i18n';
 import { PropsWithChildren, useEffect, useState } from 'react';
 import { ArrowIcon } from 'src/components/arrow-icon';
@@ -34,7 +34,10 @@ import { useGetWpComSitesQuery } from 'src/stores/sync/wpcom-sites';
 import type { SyncConnection, SyncSite } from '@studio/common/types/sync';
 
 type SelfHostedSyncConnection = Extract< SyncConnection, { siteUrl: string } >;
-type ContentSelectionItem = Awaited< ReturnType< IpcApi[ 'listSelfHostedRestContent' ] > >[ number ];
+type ContentSelectionItem = Awaited<
+	ReturnType< IpcApi[ 'listSelfHostedRestContent' ] >
+>[ number ];
+type ContentPushPreview = Awaited< ReturnType< IpcApi[ 'previewSelfHostedRestContentPush' ] > >;
 type SelectedContentItem = { id: number; type: 'post' | 'page' };
 
 function SiteSyncDescription( { children }: PropsWithChildren ) {
@@ -229,14 +232,20 @@ function SelfHostedConnectionsList( {
 function ContentPushPickerModal( {
 	items,
 	isLoading,
+	isPreviewing,
 	isPushing,
+	preview,
 	onRequestClose,
+	onPreview,
 	onPush,
 }: {
 	items: ContentSelectionItem[];
 	isLoading: boolean;
+	isPreviewing: boolean;
 	isPushing: boolean;
+	preview: ContentPushPreview | null;
 	onRequestClose: () => void;
+	onPreview: ( selectedItems: SelectedContentItem[] ) => void;
 	onPush: ( selectedItems: SelectedContentItem[] ) => void;
 } ) {
 	const { __ } = useI18n();
@@ -262,6 +271,18 @@ function ContentPushPickerModal( {
 	const selectedItems = items
 		.filter( ( item ) => selectedKeys.has( `${ item.type }:${ item.id }` ) )
 		.map( ( item ) => ( { id: item.id, type: item.type } ) );
+	const selectedKeyList = selectedItems
+		.map( ( item ) => `${ item.type }:${ item.id }` )
+		.join( ',' );
+	const previewKeyList = preview?.items
+		.map( ( item ) => `${ item.type }:${ item.id }` )
+		.join( ',' );
+	const hasPreviewForSelection = Boolean( preview ) && previewKeyList === selectedKeyList;
+	const hasConflicts = hasPreviewForSelection && Boolean( preview?.summary.conflict );
+
+	const handlePreview = () => {
+		onPreview( selectedItems );
+	};
 
 	return (
 		<Modal
@@ -307,8 +328,8 @@ function ContentPushPickerModal( {
 												{ item.title }
 											</span>
 											<span className="block text-xs text-frame-text-secondary">
-												{ item.type === 'post' ? __( 'Post' ) : __( 'Page' ) } · { item.status } ·
-												/{ item.slug }
+												{ item.type === 'post' ? __( 'Post' ) : __( 'Page' ) } · { item.status } · /
+												{ item.slug }
 											</span>
 											{ item.type === 'post' && (
 												<span className="block text-xs text-frame-text-secondary">
@@ -327,6 +348,44 @@ function ContentPushPickerModal( {
 						</div>
 					) }
 				</div>
+				{ preview && hasPreviewForSelection && (
+					<div className="px-8 py-4 border-t border-frame-border">
+						<Notice
+							status={ hasConflicts ? 'warning' : 'info' }
+							isDismissible={ false }
+							className="mb-3"
+						>
+							{ hasConflicts
+								? __(
+										'Resolve slug conflicts before pushing. Studio will not overwrite unmapped remote content.'
+								  )
+								: sprintf(
+										__( '%1$d will be created and %2$d will be updated.' ),
+										preview.summary.create,
+										preview.summary.update
+								  ) }
+						</Notice>
+						<div className="max-h-36 overflow-y-auto rounded-sm border border-frame-border">
+							{ preview.items.map( ( item ) => (
+								<div
+									key={ `${ item.type }:${ item.id }` }
+									className="flex items-center justify-between gap-3 border-b border-frame-border last:border-b-0 px-3 py-2"
+								>
+									<div className="min-w-0">
+										<div className="text-sm text-frame-text truncate">{ item.title }</div>
+										<div className="text-xs text-frame-text-secondary">/{ item.slug }</div>
+										{ item.reason && (
+											<div className="text-xs text-frame-text-secondary">{ item.reason }</div>
+										) }
+									</div>
+									<span className="text-xs text-frame-text-secondary shrink-0 capitalize">
+										{ item.action }
+									</span>
+								</div>
+							) ) }
+						</div>
+					</div>
+				) }
 				<div className="flex items-center justify-between px-8 py-4 border-t border-frame-border">
 					<div className="text-sm text-frame-text-secondary">
 						{ sprintf( __( '%d selected' ), selectedItems.length ) }
@@ -337,10 +396,18 @@ function ContentPushPickerModal( {
 						</Button>
 						<Button
 							variant="primary"
-							disabled={ isPushing || selectedItems.length === 0 }
-							onClick={ () => onPush( selectedItems ) }
+							disabled={ isPreviewing || isPushing || selectedItems.length === 0 || hasConflicts }
+							onClick={ () =>
+								hasPreviewForSelection ? onPush( selectedItems ) : handlePreview()
+							}
 						>
-							{ isPushing ? __( 'Pushing…' ) : __( 'Push selected content' ) }
+							{ isPushing
+								? __( 'Pushing…' )
+								: isPreviewing
+								? __( 'Previewing…' )
+								: hasPreviewForSelection
+								? __( 'Push selected content' )
+								: __( 'Preview selected content' ) }
 						</Button>
 					</div>
 				</div>
@@ -369,8 +436,14 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 	const [ syncConnections, setSyncConnections ] = useState< SyncConnection[] >( [] );
 	const [ pushingConnectionId, setPushingConnectionId ] = useState< string | null >( null );
 	const [ pickingConnectionId, setPickingConnectionId ] = useState< string | null >( null );
-	const [ contentSelectionItems, setContentSelectionItems ] = useState< ContentSelectionItem[] >( [] );
+	const [ contentSelectionItems, setContentSelectionItems ] = useState< ContentSelectionItem[] >(
+		[]
+	);
 	const [ isLoadingContentSelection, setIsLoadingContentSelection ] = useState( false );
+	const [ contentPushPreview, setContentPushPreview ] = useState< ContentPushPreview | null >(
+		null
+	);
+	const [ isPreviewingContentPush, setIsPreviewingContentPush ] = useState( false );
 
 	const connectedSiteIds = connectedSites.map( ( { id } ) => id );
 	// Subscribe to /me/sites so reconcileConnectedSites runs on page load to
@@ -429,6 +502,7 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 	const handleChooseSelfHostedRestContent = async ( connectionId: string ) => {
 		setPickingConnectionId( connectionId );
 		setIsLoadingContentSelection( true );
+		setContentPushPreview( null );
 		try {
 			const items = await getIpcApi().listSelfHostedRestContent( selectedSite.id );
 			setContentSelectionItems( items );
@@ -440,6 +514,28 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 			} );
 		} finally {
 			setIsLoadingContentSelection( false );
+		}
+	};
+
+	const handlePreviewSelfHostedRestContentPush = async (
+		connectionId: string,
+		selectedItems: SelectedContentItem[]
+	) => {
+		setIsPreviewingContentPush( true );
+		try {
+			const preview = await getIpcApi().previewSelfHostedRestContentPush(
+				selectedSite.id,
+				connectionId,
+				{ selectedItems }
+			);
+			setContentPushPreview( preview );
+		} catch ( error ) {
+			getIpcApi().showErrorMessageBox( {
+				title: __( 'Failed to preview content push' ),
+				message: error instanceof Error ? error.message : __( 'Please try again.' ),
+			} );
+		} finally {
+			setIsPreviewingContentPush( false );
 		}
 	};
 
@@ -600,13 +696,18 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 				<ContentPushPickerModal
 					items={ contentSelectionItems }
 					isLoading={ isLoadingContentSelection }
+					isPreviewing={ isPreviewingContentPush }
 					isPushing={ pushingConnectionId === pickingConnectionId }
+					preview={ contentPushPreview }
 					onRequestClose={ () => {
 						if ( pushingConnectionId ) {
 							return;
 						}
 						setPickingConnectionId( null );
 					} }
+					onPreview={ ( selectedItems ) =>
+						handlePreviewSelfHostedRestContentPush( pickingConnectionId, selectedItems )
+					}
 					onPush={ ( selectedItems ) =>
 						handlePushSelfHostedRestContent( pickingConnectionId, selectedItems )
 					}

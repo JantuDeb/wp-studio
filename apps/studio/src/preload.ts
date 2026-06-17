@@ -143,6 +143,8 @@ const api: IpcApi = {
 	testSyncConnection: ( connection ) => ipcRendererInvoke( 'testSyncConnection', connection ),
 	listSelfHostedRestContent: ( localSiteId ) =>
 		ipcRendererInvoke( 'listSelfHostedRestContent', localSiteId ),
+	previewSelfHostedRestContentPush: ( localSiteId, connectionId, options ) =>
+		ipcRendererInvoke( 'previewSelfHostedRestContentPush', localSiteId, connectionId, options ),
 	pushSelfHostedRestContent: ( localSiteId, connectionId, options ) =>
 		ipcRendererInvoke( 'pushSelfHostedRestContent', localSiteId, connectionId, options ),
 	pullSiteFromLive: ( siteFolder, remoteSiteId ) =>
