@@ -62,6 +62,7 @@ Included:
 - [x] Fetch local posts and pages through the local WordPress REST API.
 - [x] Fetch local categories and tags.
 - [x] Create or reuse remote categories and tags by slug.
+- [x] Preserve category/tag descriptions and category parent hierarchy.
 - [x] Detect media used as featured images or exact URLs in post/page content.
 - [x] Detect media used through generated image size URLs from `srcset`.
 - [x] Upload detected media to the remote site.

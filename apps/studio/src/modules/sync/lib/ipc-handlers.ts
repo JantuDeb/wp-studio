@@ -58,6 +58,8 @@ type LocalTerm = {
 	id: number;
 	name: string;
 	slug: string;
+	description?: string;
+	parent?: number;
 };
 
 type LocalMedia = SyncMediaItem & {
@@ -836,25 +838,74 @@ function mapTermsById( terms: LocalTerm[] ): Map< number, LocalTerm > {
 async function ensureRemoteTerm(
 	connection: z.infer< typeof selfHostedRestConnectionSchema >,
 	taxonomy: 'categories' | 'tags',
-	term: LocalTerm
+	term: LocalTerm,
+	options: { parentRemoteId?: number } = {}
 ): Promise< number > {
+	const body: Record< string, unknown > = {
+		name: term.name,
+		slug: term.slug,
+		description: term.description ?? '',
+	};
+
+	if ( taxonomy === 'categories' && options.parentRemoteId ) {
+		body.parent = options.parentRemoteId;
+	}
+
 	const existing = await remoteRestRequest< RemoteEntity[] >(
 		connection,
 		`/wp/v2/${ taxonomy }?slug=${ encodeURIComponent( term.slug ) }`
 	);
 
 	if ( existing[ 0 ]?.id ) {
+		await remoteRestRequest( connection, `/wp/v2/${ taxonomy }/${ existing[ 0 ].id }`, {
+			method: 'POST',
+			body,
+		} );
 		return existing[ 0 ].id;
 	}
 
 	const created = await remoteRestRequest< RemoteEntity >( connection, `/wp/v2/${ taxonomy }`, {
 		method: 'POST',
-		body: {
-			name: term.name,
-			slug: term.slug,
-		},
+		body,
 	} );
 	return created.id;
+}
+
+async function ensureRemoteCategoryTerm(
+	connection: z.infer< typeof selfHostedRestConnectionSchema >,
+	term: LocalTerm,
+	categoriesById: Map< number, LocalTerm >,
+	remoteCategoryIdsByLocalId: Map< number, number >,
+	visiting = new Set< number >()
+): Promise< number > {
+	const existingRemoteId = remoteCategoryIdsByLocalId.get( term.id );
+	if ( existingRemoteId ) {
+		return existingRemoteId;
+	}
+
+	if ( visiting.has( term.id ) ) {
+		throw new Error( `Circular category parent relationship detected for ${ term.slug }.` );
+	}
+	visiting.add( term.id );
+
+	let parentRemoteId: number | undefined;
+	if ( term.parent ) {
+		const parentTerm = categoriesById.get( term.parent );
+		if ( parentTerm ) {
+			parentRemoteId = await ensureRemoteCategoryTerm(
+				connection,
+				parentTerm,
+				categoriesById,
+				remoteCategoryIdsByLocalId,
+				visiting
+			);
+		}
+	}
+
+	const remoteId = await ensureRemoteTerm( connection, 'categories', term, { parentRemoteId } );
+	remoteCategoryIdsByLocalId.set( term.id, remoteId );
+	visiting.delete( term.id );
+	return remoteId;
 }
 
 async function uploadRemoteMedia(
@@ -1074,9 +1125,11 @@ export async function pushSelfHostedRestContent(
 		for ( const localCategoryId of item.categories ?? [] ) {
 			const category = categoriesById.get( localCategoryId );
 			if ( category && ! remoteCategoryIdsByLocalId.has( localCategoryId ) ) {
-				remoteCategoryIdsByLocalId.set(
-					localCategoryId,
-					await ensureRemoteTerm( parsed, 'categories', category )
+				await ensureRemoteCategoryTerm(
+					parsed,
+					category,
+					categoriesById,
+					remoteCategoryIdsByLocalId
 				);
 			}
 		}
