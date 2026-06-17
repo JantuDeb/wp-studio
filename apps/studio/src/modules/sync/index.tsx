@@ -13,6 +13,7 @@ import { useAuth } from 'src/hooks/use-auth';
 import { useOffline } from 'src/hooks/use-offline';
 import { getIpcApi } from 'src/lib/get-ipc-api';
 import { ConnectButton } from 'src/modules/sync/components/connect-button';
+import { SelfHostedConnectionWizard } from 'src/modules/sync/components/self-hosted-connection-wizard';
 import { SyncConnectedSites } from 'src/modules/sync/components/sync-connected-sites';
 import { SyncDialog } from 'src/modules/sync/components/sync-dialog';
 import { SyncSitesModalSelector } from 'src/modules/sync/components/sync-sites-modal-selector';
@@ -164,11 +165,13 @@ function getSelfHostedConnectionLabel( connection: SyncConnection ): string {
 function SelfHostedConnectionsList( {
 	connections,
 	onDisconnect,
+	onEdit,
 	onChooseContent,
 	pushingConnectionId,
 }: {
 	connections: SyncConnection[];
 	onDisconnect: ( connectionId: string ) => void;
+	onEdit: ( connection: SelfHostedSyncConnection ) => void;
 	onChooseContent: ( connectionId: string ) => void;
 	pushingConnectionId: string | null;
 } ) {
@@ -208,7 +211,10 @@ function SelfHostedConnectionsList( {
 								{ __( 'Disconnect' ) }
 							</Button>
 						</div>
-						<div className="mt-4 flex justify-end">
+						<div className="mt-4 flex justify-end gap-3">
+							<Button variant="secondary" onClick={ () => onEdit( connection ) }>
+								{ __( 'Edit credentials' ) }
+							</Button>
 							<Button
 								variant="secondary"
 								disabled={
@@ -444,6 +450,8 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 		null
 	);
 	const [ isPreviewingContentPush, setIsPreviewingContentPush ] = useState( false );
+	const [ editingSelfHostedConnection, setEditingSelfHostedConnection ] =
+		useState< SelfHostedSyncConnection | null >( null );
 
 	const connectedSiteIds = connectedSites.map( ( { id } ) => id );
 	// Subscribe to /me/sites so reconcileConnectedSites runs on page load to
@@ -600,6 +608,7 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 						<SelfHostedConnectionsList
 							connections={ syncConnections }
 							onDisconnect={ handleDisconnectSelfHosted }
+							onEdit={ setEditingSelfHostedConnection }
 							onChooseContent={ handleChooseSelfHostedRestContent }
 							pushingConnectionId={ pushingConnectionId }
 						/>
@@ -712,6 +721,25 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 						handlePushSelfHostedRestContent( pickingConnectionId, selectedItems )
 					}
 				/>
+			) }
+
+			{ editingSelfHostedConnection && (
+				<Modal
+					className="sync-sites-modal w-[90%] max-w-[900px] h-full max-h-[90vh] [&>div]:!p-0 [&_[role=document]]:flex [&_[role=document]]:flex-col [&_[role=document]>div:last-child]:flex-1 [&_[role=document]>div:last-child]:min-h-0"
+					onRequestClose={ () => setEditingSelfHostedConnection( null ) }
+					title={ __( 'Edit self-hosted connection' ) }
+				>
+					<SelfHostedConnectionWizard
+						selectedSite={ selectedSite }
+						connection={ editingSelfHostedConnection }
+						onBack={ () => setEditingSelfHostedConnection( null ) }
+						onRequestClose={ () => setEditingSelfHostedConnection( null ) }
+						onSaved={ ( connections ) => {
+							setSyncConnections( connections );
+							setEditingSelfHostedConnection( null );
+						} }
+					/>
+				</Modal>
 			) }
 		</div>
 	);

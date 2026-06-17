@@ -22,10 +22,13 @@ import wpcomFactory from '@studio/common/lib/wpcom-factory';
 import wpcomXhrRequest from '@studio/common/lib/wpcom-xhr-request-factory';
 import {
 	selfHostedRestConnectionWithAuthSchema,
+	selfHostedSshConnectionWithAuthSchema,
 	SyncConnection,
 	SyncSite,
 	type SelfHostedRestConnectionWithAuth,
+	type SelfHostedSshConnectionWithAuth,
 } from '@studio/common/types/sync';
+import { Client, type ConnectConfig } from 'ssh2';
 import { Upload } from 'tus-js-client';
 import { z } from 'zod';
 import {
@@ -136,7 +139,6 @@ type ContentPushPreview = {
  * Key format: `${selectedSiteId}-${remoteSiteId}`
  */
 const SYNC_ABORT_CONTROLLERS = new Map< string, AbortController >();
-
 /**
  * Registry to store TUS upload instances and their pause state for ongoing uploads.
  * Key format: `${selectedSiteId}-${remoteSiteId}`
@@ -673,12 +675,24 @@ export async function testSyncConnection(
 		connection.localSiteId,
 		connection
 	);
-	const parsed = selfHostedRestConnectionWithAuthSchema.safeParse( hydratedConnection );
-	if ( ! parsed.success ) {
-		return { ok: false, message: 'Only REST API self-hosted connections can be tested yet.' };
+
+	const restConnection = selfHostedRestConnectionWithAuthSchema.safeParse( hydratedConnection );
+	if ( restConnection.success ) {
+		return testSelfHostedRestConnection( restConnection.data );
 	}
 
-	const siteUrl = new URL( parsed.data.siteUrl );
+	const sshConnection = selfHostedSshConnectionWithAuthSchema.safeParse( hydratedConnection );
+	if ( sshConnection.success ) {
+		return testSelfHostedSshConnection( sshConnection.data );
+	}
+
+	return { ok: false, message: 'Connection testing for this sync mode is not implemented yet.' };
+}
+
+async function testSelfHostedRestConnection(
+	connection: SelfHostedRestConnectionWithAuth
+): Promise< { ok: boolean; message?: string } > {
+	const siteUrl = new URL( connection.siteUrl );
 	const restUrl = new URL( '/wp-json/', siteUrl );
 
 	try {
@@ -719,6 +733,119 @@ export async function testSyncConnection(
 			ok: false,
 			message:
 				error instanceof Error ? error.message : 'Unable to connect to the WordPress REST API.',
+		};
+	}
+}
+
+function quoteRemoteShellArg( value: string ): string {
+	return `'${ value.replace( /'/g, `'\\''` ) }'`;
+}
+
+async function getSshPrivateKey(
+	connection: SelfHostedSshConnectionWithAuth
+): Promise< string | undefined > {
+	if ( connection.auth.privateKeyText ) {
+		return connection.auth.privateKeyText;
+	}
+
+	if ( connection.auth.privateKeyPath ) {
+		return fsPromises.readFile( connection.auth.privateKeyPath, 'utf8' );
+	}
+}
+
+function getSshPreflightCommand( connection: SelfHostedSshConnectionWithAuth ): string {
+	const wpCliPath = connection.auth.wpCliPath?.trim() || 'wp';
+	const remotePath = quoteRemoteShellArg( connection.auth.remoteWordPressPath );
+	return [
+		`test -d ${ remotePath }`,
+		`cd ${ remotePath }`,
+		`${ quoteRemoteShellArg( wpCliPath ) } core version --path=${ remotePath }`,
+	].join( ' && ' );
+}
+
+async function runSshCommand(
+	connection: SelfHostedSshConnectionWithAuth,
+	command: string
+): Promise< string > {
+	const privateKey = await getSshPrivateKey( connection );
+	const config: ConnectConfig = {
+		host: connection.auth.host,
+		port: connection.auth.port,
+		username: connection.auth.username,
+		readyTimeout: 10000,
+	};
+
+	if ( connection.auth.password ) {
+		config.password = connection.auth.password;
+	}
+
+	if ( privateKey ) {
+		config.privateKey = privateKey;
+	}
+
+	return new Promise( ( resolve, reject ) => {
+		const client = new Client();
+		const timeout = setTimeout( () => {
+			client.end();
+			reject( new Error( 'SSH connection timed out.' ) );
+		}, 30000 );
+
+		client
+			.on( 'ready', () => {
+				client.exec( command, ( execError, stream ) => {
+					if ( execError ) {
+						clearTimeout( timeout );
+						client.end();
+						reject( execError );
+						return;
+					}
+
+					let stdout = '';
+					let stderr = '';
+
+					stream
+						.on( 'close', ( code: number | null ) => {
+							clearTimeout( timeout );
+							client.end();
+							if ( code === 0 || code === null ) {
+								resolve( stdout );
+								return;
+							}
+							reject( new Error( stderr.trim() || `Remote command failed with ${ code }.` ) );
+						} )
+						.on( 'data', ( data: Buffer ) => {
+							stdout += data.toString( 'utf8' );
+						} );
+
+					stream.stderr.on( 'data', ( data: Buffer ) => {
+						stderr += data.toString( 'utf8' );
+					} );
+				} );
+			} )
+			.on( 'error', ( error ) => {
+				clearTimeout( timeout );
+				reject( error );
+			} )
+			.connect( config );
+	} );
+}
+
+async function testSelfHostedSshConnection(
+	connection: SelfHostedSshConnectionWithAuth
+): Promise< { ok: boolean; message?: string } > {
+	try {
+		const stdout = await runSshCommand( connection, getSshPreflightCommand( connection ) );
+		const wpVersion = stdout.trim();
+		return {
+			ok: true,
+			message: wpVersion
+				? `SSH connected and WP-CLI found WordPress ${ wpVersion }.`
+				: 'SSH connected and WP-CLI is available.',
+		};
+	} catch ( error ) {
+		return {
+			ok: false,
+			message: error instanceof Error ? error.message : 'Unable to connect over SSH.',
 		};
 	}
 }

@@ -138,6 +138,7 @@ export const selfHostedSshAuthSchema = z.object( {
 	host: z.string(),
 	port: z.number().int().positive().default( 22 ),
 	username: z.string(),
+	password: z.string().optional(),
 	privateKeyPath: z.string().optional(),
 	privateKeyText: z.string().optional(),
 	remoteWordPressPath: z.string(),

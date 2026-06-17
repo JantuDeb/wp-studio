@@ -31,7 +31,6 @@ Phase 2 adds a first-class self-hosted connection flow without enabling self-hos
 ## Not Implemented Yet
 
 - [ ] REST content push for posts, pages, media, terms, and post meta.
-- [ ] SSH/WP-CLI connection testing.
 - [ ] Connector plugin connection testing.
 - [ ] Self-hosted pull or push operations.
 - [ ] Production database push.
@@ -40,15 +39,17 @@ Phase 2 adds a first-class self-hosted connection flow without enabling self-hos
 
 - [x] WordPress.com / Pressable behavior is preserved.
 - [x] Full-sync providers still advertise `canPushToProduction: false`.
-- [x] The UI states that SSH and connector testing are not available yet.
+- [x] The UI states that connector testing is not available yet.
 - [x] REST testing only verifies that the remote site exposes a WordPress REST API index.
 - [x] Self-hosted auth fields are stripped from `shared.json` and stored in encrypted Studio app data.
+- [x] Saved self-hosted connections can be edited to update site metadata or replace credentials.
+- [x] SSH + WP-CLI connection testing verifies password or private-key SSH auth, the remote WordPress path, and `wp core version`.
 
 ## Follow-Up PRs
 
 - [x] Add secure credential storage or encryption before production use.
 - [x] Implement REST content-only push and default remote writes to draft.
-- [ ] Add SSH/WP-CLI preflight checks.
+- [x] Add SSH/WP-CLI preflight checks.
 - [ ] Add connector plugin discovery and token validation.
 - [ ] Reuse existing import/export archive code for full sync.
 - [ ] Add production push dry-run, backup, and typed-confirmation requirements.
@@ -97,4 +98,24 @@ Included:
 Still pending:
 
 - [ ] CLI access to encrypted self-hosted credentials, if CLI-managed self-hosted sync becomes required.
-- [ ] Credential rotation/edit UI for saved self-hosted connections.
+- [x] Credential rotation/edit UI for saved self-hosted connections.
+
+## SSH Preflight Addendum
+
+SSH + WP-CLI sync still does not pull or push site data. The current preflight only validates that Studio can reach the remote server and run WP-CLI against the configured WordPress path.
+
+Included:
+
+- [x] Test SSH auth with host, port, username, password, private key path, or pasted private key text.
+- [x] Use a Node SSH client so password auth does not require shell prompts or `sshpass`.
+- [x] Run SSH with a connection timeout.
+- [x] Verify the remote WordPress directory exists.
+- [x] Run `wp core version` with the configured WP-CLI path or `wp`.
+- [x] Keep preflight commands scoped to the user-provided WordPress path.
+
+Still pending:
+
+- [ ] Pull remote database with `wp db export`.
+- [ ] Archive and download remote `wp-content` parts.
+- [ ] Reuse Studio import code to restore the archive locally.
+- [ ] Staging push with backup and selected restore parts.

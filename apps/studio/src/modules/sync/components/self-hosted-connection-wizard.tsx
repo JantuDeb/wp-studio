@@ -13,6 +13,7 @@ import type {
 } from '@studio/common/types/sync';
 
 type SelfHostedMode = Exclude< SyncMode, 'wpcom' >;
+type SelfHostedSyncConnection = Extract< SyncConnection, { siteUrl: string } >;
 
 type ConnectionStatus = {
 	type: 'idle' | 'success' | 'error';
@@ -89,90 +90,156 @@ function getConnectionId(): string {
 
 export function SelfHostedConnectionWizard( {
 	selectedSite,
+	connection,
 	onBack,
 	onRequestClose,
 	onSaved,
 }: {
 	selectedSite: SiteDetails;
+	connection?: SelfHostedSyncConnection;
 	onBack: () => void;
 	onRequestClose: () => void;
 	onSaved: ( connections: SyncConnection[] ) => void;
 } ) {
 	const { __ } = useI18n();
-	const [ siteUrl, setSiteUrl ] = useState( '' );
-	const [ environmentType, setEnvironmentType ] = useState< SyncEnvironmentType >( 'production' );
-	const [ syncMode, setSyncMode ] = useState< SelfHostedMode >( 'rest-content' );
-	const [ username, setUsername ] = useState( '' );
-	const [ applicationPassword, setApplicationPassword ] = useState( '' );
-	const [ sshHost, setSshHost ] = useState( '' );
-	const [ sshPort, setSshPort ] = useState( '22' );
-	const [ sshUsername, setSshUsername ] = useState( '' );
-	const [ privateKeyPath, setPrivateKeyPath ] = useState( '' );
-	const [ privateKeyText, setPrivateKeyText ] = useState( '' );
-	const [ remoteWordPressPath, setRemoteWordPressPath ] = useState( '' );
-	const [ wpCliPath, setWpCliPath ] = useState( '' );
-	const [ connectorToken, setConnectorToken ] = useState( '' );
+	const [ connectionId ] = useState( () => connection?.id ?? getConnectionId() );
+	const [ createdAt ] = useState( () => connection?.createdAt ?? new Date().toISOString() );
+	const [ siteUrl, setSiteUrl ] = useState( connection?.siteUrl ?? '' );
+	const [ environmentType, setEnvironmentType ] = useState< SyncEnvironmentType >(
+		connection?.environmentType ?? 'production'
+	);
+	const [ syncMode, setSyncMode ] = useState< SelfHostedMode >(
+		connection?.syncMode ?? 'rest-content'
+	);
+	const [ username, setUsername ] = useState(
+		connection?.provider === 'self-hosted-rest' ? connection.auth?.username ?? '' : ''
+	);
+	const [ applicationPassword, setApplicationPassword ] = useState(
+		connection?.provider === 'self-hosted-rest' ? connection.auth?.applicationPassword ?? '' : ''
+	);
+	const [ sshHost, setSshHost ] = useState(
+		connection?.provider === 'self-hosted-ssh' ? connection.auth?.host ?? '' : ''
+	);
+	const [ sshPort, setSshPort ] = useState(
+		connection?.provider === 'self-hosted-ssh' ? String( connection.auth?.port ?? 22 ) : '22'
+	);
+	const [ sshUsername, setSshUsername ] = useState(
+		connection?.provider === 'self-hosted-ssh' ? connection.auth?.username ?? '' : ''
+	);
+	const [ sshPassword, setSshPassword ] = useState(
+		connection?.provider === 'self-hosted-ssh' ? connection.auth?.password ?? '' : ''
+	);
+	const [ privateKeyPath, setPrivateKeyPath ] = useState(
+		connection?.provider === 'self-hosted-ssh' ? connection.auth?.privateKeyPath ?? '' : ''
+	);
+	const [ privateKeyText, setPrivateKeyText ] = useState(
+		connection?.provider === 'self-hosted-ssh' ? connection.auth?.privateKeyText ?? '' : ''
+	);
+	const [ remoteWordPressPath, setRemoteWordPressPath ] = useState(
+		connection?.provider === 'self-hosted-ssh' ? connection.auth?.remoteWordPressPath ?? '' : ''
+	);
+	const [ wpCliPath, setWpCliPath ] = useState(
+		connection?.provider === 'self-hosted-ssh' ? connection.auth?.wpCliPath ?? '' : ''
+	);
+	const [ connectorToken, setConnectorToken ] = useState(
+		connection?.provider === 'self-hosted-connector' ? connection.auth?.token ?? '' : ''
+	);
 	const [ status, setStatus ] = useState< ConnectionStatus >( { type: 'idle', message: '' } );
 	const [ isTesting, setIsTesting ] = useState( false );
 	const [ isSaving, setIsSaving ] = useState( false );
+	const isEditing = Boolean( connection );
 
 	const selectedMode = useMemo(
 		() => SELF_HOSTED_MODES.find( ( mode ) => mode.value === syncMode ),
 		[ syncMode ]
 	);
 
-	const canTest = syncMode === 'rest-content';
 	const normalizedUrl = normalizeSiteUrl( siteUrl );
+	const canKeepSavedCredentials = isEditing && syncMode === connection?.syncMode;
+	const hasRestCredentials = Boolean( username.trim() && applicationPassword );
+	const hasSshCredentials = Boolean(
+		sshHost.trim() &&
+			sshUsername.trim() &&
+			remoteWordPressPath.trim() &&
+			( sshPassword || privateKeyPath.trim() || privateKeyText )
+	);
+	const hasConnectorCredentials = Boolean( connectorToken );
+	const hasCredentialsForMode =
+		( syncMode === 'rest-content' && hasRestCredentials ) ||
+		( syncMode === 'ssh-wp-cli' && hasSshCredentials ) ||
+		( syncMode === 'connector-plugin' && hasConnectorCredentials );
+	const canSave = Boolean( normalizedUrl && ( hasCredentialsForMode || canKeepSavedCredentials ) );
+	const canTest =
+		( syncMode === 'rest-content' || syncMode === 'ssh-wp-cli' ) &&
+		Boolean( normalizedUrl ) &&
+		canSave;
 
 	const buildConnection = (): SyncConnection => {
 		const now = new Date().toISOString();
 		const base = {
-			id: getConnectionId(),
+			id: connectionId,
 			localSiteId: selectedSite.id,
 			siteUrl: normalizedUrl,
 			environmentType,
-			lastPullTimestamp: null,
-			lastPushTimestamp: null,
+			lastPullTimestamp: connection?.lastPullTimestamp ?? null,
+			lastPushTimestamp: connection?.lastPushTimestamp ?? null,
 			capabilities: getCapabilitiesForMode( syncMode ),
-			createdAt: now,
+			createdAt,
 			updatedAt: now,
 		};
 
 		switch ( syncMode ) {
-			case 'rest-content':
+			case 'rest-content': {
+				const auth =
+					username.trim() || applicationPassword
+						? {
+								username: username.trim(),
+								applicationPassword,
+						  }
+						: undefined;
 				return {
 					...base,
 					provider: 'self-hosted-rest',
 					syncMode,
-					auth: {
-						username: username.trim(),
-						applicationPassword,
-					},
+					auth,
 				};
-			case 'ssh-wp-cli':
+			}
+			case 'ssh-wp-cli': {
+				const auth =
+					sshHost.trim() ||
+					sshUsername.trim() ||
+					sshPassword ||
+					privateKeyPath.trim() ||
+					privateKeyText ||
+					remoteWordPressPath.trim() ||
+					wpCliPath.trim()
+						? {
+								host: sshHost.trim(),
+								port: Number.parseInt( sshPort, 10 ) || 22,
+								username: sshUsername.trim(),
+								password: sshPassword || undefined,
+								privateKeyPath: privateKeyPath.trim() || undefined,
+								privateKeyText: privateKeyText || undefined,
+								remoteWordPressPath: remoteWordPressPath.trim(),
+								wpCliPath: wpCliPath.trim() || undefined,
+						  }
+						: undefined;
 				return {
 					...base,
 					provider: 'self-hosted-ssh',
 					syncMode,
-					auth: {
-						host: sshHost.trim(),
-						port: Number.parseInt( sshPort, 10 ) || 22,
-						username: sshUsername.trim(),
-						privateKeyPath: privateKeyPath.trim() || undefined,
-						privateKeyText: privateKeyText || undefined,
-						remoteWordPressPath: remoteWordPressPath.trim(),
-						wpCliPath: wpCliPath.trim() || undefined,
-					},
+					auth,
 				};
-			case 'connector-plugin':
+			}
+			case 'connector-plugin': {
+				const auth = connectorToken ? { token: connectorToken } : undefined;
 				return {
 					...base,
 					provider: 'self-hosted-connector',
 					syncMode,
-					auth: {
-						token: connectorToken,
-					},
+					auth,
 				};
+			}
 		}
 	};
 
@@ -223,10 +290,16 @@ export function SelfHostedConnectionWizard( {
 				<div className="max-w-2xl mx-auto flex flex-col gap-5">
 					<div>
 						<h3 className="text-base font-medium text-frame-text">
-							{ __( 'Self-hosted WordPress' ) }
+							{ isEditing ? __( 'Edit self-hosted connection' ) : __( 'Self-hosted WordPress' ) }
 						</h3>
 						<p className="text-sm text-frame-text-secondary mt-1">
-							{ __( 'Connect a WordPress site by URL and choose how Studio should sync with it.' ) }
+							{ isEditing
+								? __(
+										'Update the saved site details or enter replacement credentials for this connection.'
+								  )
+								: __(
+										'Connect a WordPress site by URL and choose how Studio should sync with it.'
+								  ) }
 						</p>
 					</div>
 
@@ -285,6 +358,14 @@ export function SelfHostedConnectionWizard( {
 						</div>
 					) }
 
+					{ isEditing && syncMode === connection?.syncMode && (
+						<Notice status="info" isDismissible={ false }>
+							{ __(
+								'Leave credential fields blank to keep the encrypted credentials already saved for this connection.'
+							) }
+						</Notice>
+					) }
+
 					{ syncMode === 'ssh-wp-cli' && (
 						<div className="grid grid-cols-1 md:grid-cols-2 gap-4">
 							<TextControl label={ __( 'SSH host' ) } value={ sshHost } onChange={ setSshHost } />
@@ -294,6 +375,14 @@ export function SelfHostedConnectionWizard( {
 								value={ sshUsername }
 								onChange={ setSshUsername }
 							/>
+							<label className="flex flex-col gap-2 text-sm font-medium text-frame-text">
+								{ __( 'SSH password' ) }
+								<PasswordControl
+									value={ sshPassword }
+									onChange={ setSshPassword }
+									placeholder={ __( 'Optional if using a private key' ) }
+								/>
+							</label>
 							<TextControl
 								label={ __( 'Private key path' ) }
 								value={ privateKeyPath }
@@ -316,6 +405,9 @@ export function SelfHostedConnectionWizard( {
 								className="md:col-span-2"
 								__nextHasNoMarginBottom
 							/>
+							<Notice status="info" isDismissible={ false } className="md:col-span-2">
+								{ __( 'Studio will only run SSH commands inside the WordPress path you provide.' ) }
+							</Notice>
 						</div>
 					) }
 
@@ -326,10 +418,10 @@ export function SelfHostedConnectionWizard( {
 						</label>
 					) }
 
-					{ syncMode !== 'rest-content' && (
+					{ syncMode === 'connector-plugin' && (
 						<Notice status="info" isDismissible={ false }>
 							{ __(
-								'Connection testing for this mode will be added with the full-sync implementation.'
+								'Connection testing for the connector plugin mode will be added with the plugin implementation.'
 							) }
 						</Notice>
 					) }
@@ -355,17 +447,21 @@ export function SelfHostedConnectionWizard( {
 					</Button>
 					<Button
 						variant="secondary"
-						disabled={ ! canTest || isTesting || ! normalizedUrl }
+						disabled={ ! canTest || isTesting }
 						onClick={ handleTestConnection }
 					>
 						{ isTesting ? __( 'Testing…' ) : __( 'Test connection' ) }
 					</Button>
 					<Button
 						variant="primary"
-						disabled={ isSaving || ! normalizedUrl }
+						disabled={ isSaving || ! canSave }
 						onClick={ handleSaveConnection }
 					>
-						{ isSaving ? __( 'Saving…' ) : __( 'Save connection' ) }
+						{ isSaving
+							? __( 'Saving…' )
+							: isEditing
+							? __( 'Save changes' )
+							: __( 'Save connection' ) }
 					</Button>
 				</div>
 			</div>
