@@ -21,9 +21,10 @@ import {
 import wpcomFactory from '@studio/common/lib/wpcom-factory';
 import wpcomXhrRequest from '@studio/common/lib/wpcom-xhr-request-factory';
 import {
-	selfHostedRestConnectionSchema,
+	selfHostedRestConnectionWithAuthSchema,
 	SyncConnection,
 	SyncSite,
+	type SelfHostedRestConnectionWithAuth,
 } from '@studio/common/types/sync';
 import { Upload } from 'tus-js-client';
 import { z } from 'zod';
@@ -48,6 +49,13 @@ import {
 	replaceMediaUrls,
 	type SyncMediaItem,
 } from './self-hosted-media-sync';
+import {
+	deleteSyncConnectionCredentials,
+	hydrateSyncConnectionCredentials,
+	saveSyncConnectionCredentials,
+	stripSyncConnectionAuth,
+	stripSyncConnectionsAuth,
+} from './sync-credential-vault';
 
 type LocalRenderedField = {
 	raw?: string;
@@ -632,7 +640,7 @@ export async function getSyncConnections(
 	event: IpcMainInvokeEvent,
 	localSiteId: string
 ): Promise< SyncConnection[] > {
-	return getSyncConnectionsForLocalSite( localSiteId );
+	return stripSyncConnectionsAuth( await getSyncConnectionsForLocalSite( localSiteId ) );
 }
 
 export async function saveSyncConnection(
@@ -640,7 +648,12 @@ export async function saveSyncConnection(
 	localSiteId: string,
 	connection: SyncConnection
 ): Promise< SyncConnection[] > {
-	return addOrUpdateSyncConnection( localSiteId, connection );
+	await saveSyncConnectionCredentials( localSiteId, connection );
+	const connections = await addOrUpdateSyncConnection(
+		localSiteId,
+		stripSyncConnectionAuth( connection )
+	);
+	return stripSyncConnectionsAuth( connections );
 }
 
 export async function deleteSyncConnection(
@@ -648,14 +661,19 @@ export async function deleteSyncConnection(
 	localSiteId: string,
 	connectionId: string
 ): Promise< SyncConnection[] > {
-	return removeSyncConnection( localSiteId, connectionId );
+	await deleteSyncConnectionCredentials( localSiteId, connectionId );
+	return stripSyncConnectionsAuth( await removeSyncConnection( localSiteId, connectionId ) );
 }
 
 export async function testSyncConnection(
 	event: IpcMainInvokeEvent,
 	connection: SyncConnection
 ): Promise< { ok: boolean; message?: string } > {
-	const parsed = selfHostedRestConnectionSchema.safeParse( connection );
+	const hydratedConnection = await hydrateSyncConnectionCredentials(
+		connection.localSiteId,
+		connection
+	);
+	const parsed = selfHostedRestConnectionWithAuthSchema.safeParse( hydratedConnection );
 	if ( ! parsed.success ) {
 		return { ok: false, message: 'Only REST API self-hosted connections can be tested yet.' };
 	}
@@ -716,7 +734,7 @@ function getRemoteRestUrl( siteUrl: string, pathName: string ): URL {
 }
 
 async function remoteRestRequest< T >(
-	connection: z.infer< typeof selfHostedRestConnectionSchema >,
+	connection: SelfHostedRestConnectionWithAuth,
 	pathName: string,
 	options: {
 		method?: string;
@@ -836,7 +854,7 @@ function mapTermsById( terms: LocalTerm[] ): Map< number, LocalTerm > {
 }
 
 async function ensureRemoteTerm(
-	connection: z.infer< typeof selfHostedRestConnectionSchema >,
+	connection: SelfHostedRestConnectionWithAuth,
 	taxonomy: 'categories' | 'tags',
 	term: LocalTerm,
 	options: { parentRemoteId?: number } = {}
@@ -872,7 +890,7 @@ async function ensureRemoteTerm(
 }
 
 async function ensureRemoteCategoryTerm(
-	connection: z.infer< typeof selfHostedRestConnectionSchema >,
+	connection: SelfHostedRestConnectionWithAuth,
 	term: LocalTerm,
 	categoriesById: Map< number, LocalTerm >,
 	remoteCategoryIdsByLocalId: Map< number, number >,
@@ -909,7 +927,7 @@ async function ensureRemoteCategoryTerm(
 }
 
 async function uploadRemoteMedia(
-	connection: z.infer< typeof selfHostedRestConnectionSchema >,
+	connection: SelfHostedRestConnectionWithAuth,
 	media: LocalMedia
 ): Promise< RemoteEntity > {
 	const storedRemoteId = await getStoredRemotePostId(
@@ -1013,7 +1031,7 @@ async function storeRemotePostId(
 }
 
 async function findRemoteContentMatch(
-	connection: z.infer< typeof selfHostedRestConnectionSchema >,
+	connection: SelfHostedRestConnectionWithAuth,
 	item: LocalContentItem
 ): Promise< { remoteId: number | null; source: 'stored' | 'slug' | null } > {
 	const storedRemoteId = await getStoredRemotePostId(
@@ -1036,7 +1054,7 @@ async function findRemoteContentMatch(
 }
 
 async function findRemoteContentItem(
-	connection: z.infer< typeof selfHostedRestConnectionSchema >,
+	connection: SelfHostedRestConnectionWithAuth,
 	item: LocalContentItem
 ): Promise< number | null > {
 	const match = await findRemoteContentMatch( connection, item );
@@ -1056,7 +1074,8 @@ export async function previewSelfHostedRestContentPush(
 ): Promise< ContentPushPreview > {
 	const connections = await getSyncConnectionsForLocalSite( localSiteId );
 	const connection = connections.find( ( item ) => item.id === connectionId );
-	const parsed = selfHostedRestConnectionSchema.parse( connection );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedRestConnectionWithAuthSchema.parse( hydratedConnection );
 	const allContentItems = await fetchAllLocalContent( localSiteId );
 	const contentItems = filterSelectedContentItems( allContentItems, options.selectedItems );
 	const items: ContentPushPreviewItem[] = [];
@@ -1105,7 +1124,8 @@ export async function pushSelfHostedRestContent(
 ): Promise< { posts: number; pages: number; media: number; categories: number; tags: number } > {
 	const connections = await getSyncConnectionsForLocalSite( localSiteId );
 	const connection = connections.find( ( item ) => item.id === connectionId );
-	const parsed = selfHostedRestConnectionSchema.parse( connection );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedRestConnectionWithAuthSchema.parse( hydratedConnection );
 
 	const [ allContentItems, categories, tags, mediaItems ] = await Promise.all( [
 		fetchAllLocalContent( localSiteId ),

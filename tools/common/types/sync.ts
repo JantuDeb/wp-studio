@@ -163,20 +163,33 @@ const syncConnectionBaseSchema = z.object( {
 export const selfHostedRestConnectionSchema = syncConnectionBaseSchema.extend( {
 	provider: z.literal( 'self-hosted-rest' ),
 	syncMode: z.literal( 'rest-content' ),
-	auth: selfHostedRestAuthSchema,
+	auth: selfHostedRestAuthSchema.optional(),
 } );
 
 export const selfHostedSshConnectionSchema = syncConnectionBaseSchema.extend( {
 	provider: z.literal( 'self-hosted-ssh' ),
 	syncMode: z.literal( 'ssh-wp-cli' ),
-	auth: selfHostedSshAuthSchema,
+	auth: selfHostedSshAuthSchema.optional(),
 } );
 
 export const selfHostedConnectorConnectionSchema = syncConnectionBaseSchema.extend( {
 	provider: z.literal( 'self-hosted-connector' ),
 	syncMode: z.literal( 'connector-plugin' ),
-	auth: selfHostedConnectorAuthSchema,
+	auth: selfHostedConnectorAuthSchema.optional(),
 } );
+
+export const selfHostedRestConnectionWithAuthSchema = selfHostedRestConnectionSchema.extend( {
+	auth: selfHostedRestAuthSchema,
+} );
+
+export const selfHostedSshConnectionWithAuthSchema = selfHostedSshConnectionSchema.extend( {
+	auth: selfHostedSshAuthSchema,
+} );
+
+export const selfHostedConnectorConnectionWithAuthSchema =
+	selfHostedConnectorConnectionSchema.extend( {
+		auth: selfHostedConnectorAuthSchema,
+	} );
 
 export const syncConnectionSchema = z.union( [
 	syncSiteSchema,
@@ -188,6 +201,15 @@ export const syncConnectionSchema = z.union( [
 export type SelfHostedRestConnection = z.infer< typeof selfHostedRestConnectionSchema >;
 export type SelfHostedSshConnection = z.infer< typeof selfHostedSshConnectionSchema >;
 export type SelfHostedConnectorConnection = z.infer< typeof selfHostedConnectorConnectionSchema >;
+export type SelfHostedRestConnectionWithAuth = z.infer<
+	typeof selfHostedRestConnectionWithAuthSchema
+>;
+export type SelfHostedSshConnectionWithAuth = z.infer<
+	typeof selfHostedSshConnectionWithAuthSchema
+>;
+export type SelfHostedConnectorConnectionWithAuth = z.infer<
+	typeof selfHostedConnectorConnectionWithAuthSchema
+>;
 export type SyncConnection = z.infer< typeof syncConnectionSchema >;
 
 // Pull backup API schemas

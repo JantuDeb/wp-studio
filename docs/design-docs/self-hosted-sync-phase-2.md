@@ -35,7 +35,6 @@ Phase 2 adds a first-class self-hosted connection flow without enabling self-hos
 - [ ] Connector plugin connection testing.
 - [ ] Self-hosted pull or push operations.
 - [ ] Production database push.
-- [ ] Secure credential storage outside `shared.json`.
 
 ## Guardrails
 
@@ -43,10 +42,11 @@ Phase 2 adds a first-class self-hosted connection flow without enabling self-hos
 - [x] Full-sync providers still advertise `canPushToProduction: false`.
 - [x] The UI states that SSH and connector testing are not available yet.
 - [x] REST testing only verifies that the remote site exposes a WordPress REST API index.
+- [x] Self-hosted auth fields are stripped from `shared.json` and stored in encrypted Studio app data.
 
 ## Follow-Up PRs
 
-- [ ] Add secure credential storage or encryption before production use.
+- [x] Add secure credential storage or encryption before production use.
 - [x] Implement REST content-only push and default remote writes to draft.
 - [ ] Add SSH/WP-CLI preflight checks.
 - [ ] Add connector plugin discovery and token validation.
@@ -79,3 +79,22 @@ Still pending:
 - [ ] Rich media reference detection for galleries, block attributes, and attachment references that do not contain a known local media URL.
 - [ ] Featured image metadata parity beyond title, alt text, caption, and description.
 - [ ] Tests for the main-process content push pipeline.
+
+## Credential Storage Addendum
+
+Self-hosted connection metadata remains in `shared.json` so Studio and CLI-facing code can list saved connections without WordPress.com authentication. Sensitive auth metadata is not written there.
+
+Included:
+
+- [x] Made self-hosted connection auth optional for stored connection metadata.
+- [x] Added explicit runtime connection schemas that require auth before remote operations.
+- [x] Store REST Application Passwords, SSH private keys, and connector tokens in Studio app data.
+- [x] Encrypt stored auth values with Electron `safeStorage`.
+- [x] Use app config locking when writing credential records.
+- [x] Hydrate credentials only in the main process for REST connection tests, push previews, and pushes.
+- [x] Delete encrypted credentials when a sync connection is removed.
+
+Still pending:
+
+- [ ] CLI access to encrypted self-hosted credentials, if CLI-managed self-hosted sync becomes required.
+- [ ] Credential rotation/edit UI for saved self-hosted connections.

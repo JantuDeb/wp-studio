@@ -29,6 +29,11 @@ export interface NightlyPromptResult {
 	dontAskAgain: boolean;
 }
 
+export interface SyncConnectionCredentialRecord {
+	encryptedAuth: string;
+	updatedAt: string;
+}
+
 export interface UserData {
 	version: 1;
 	siteMetadata: Record< string, AppdataSiteData >;
@@ -52,6 +57,7 @@ export interface UserData {
 	aiSessionPlacements?: Record< string, AiSessionSitePlacement >;
 	lastNightlyUpdateCheck?: number;
 	nightlyPromptResult?: NightlyPromptResult;
+	syncConnectionCredentials?: Record< string, SyncConnectionCredentialRecord >;
 }
 
 export interface PromptWindowsSpeedUpResult {

@@ -150,10 +150,6 @@ describe( 'Shared Config', () => {
 							siteUrl: 'https://example.com',
 							environmentType: 'production',
 							syncMode: 'rest-content',
-							auth: {
-								username: 'admin',
-								applicationPassword: 'application-password',
-							},
 							capabilities: {
 								canPush: true,
 								canPushToProduction: true,
@@ -172,6 +168,7 @@ describe( 'Shared Config', () => {
 				lastPullTimestamp: null,
 				lastPushTimestamp: null,
 			} );
+			expect( config.syncConnections?.[ 'local-site-id' ][ 0 ] ).not.toHaveProperty( 'auth' );
 		} );
 	} );
 

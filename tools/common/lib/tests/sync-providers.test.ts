@@ -6,6 +6,7 @@ import {
 } from '@studio/common/lib/sync/providers';
 import {
 	selfHostedRestConnectionSchema,
+	selfHostedRestConnectionWithAuthSchema,
 	syncConnectionSchema,
 	syncSiteSchema,
 } from '@studio/common/types/sync';
@@ -29,8 +30,29 @@ describe( 'sync provider types', () => {
 		expect( syncConnectionSchema.parse( site ) ).toEqual( site );
 	} );
 
-	it( 'parses a self-hosted REST content connection', () => {
+	it( 'parses stored self-hosted REST content connection metadata without credentials', () => {
 		const connection = selfHostedRestConnectionSchema.parse( {
+			id: 'connection-id',
+			localSiteId: 'local-site-id',
+			provider: 'self-hosted-rest',
+			siteUrl: 'https://example.com',
+			environmentType: 'production',
+			syncMode: 'rest-content',
+			capabilities: {
+				canPush: true,
+				canPushToProduction: true,
+				canSyncContent: true,
+			},
+		} );
+
+		expect( connection.lastPullTimestamp ).toBeNull();
+		expect( connection.lastPushTimestamp ).toBeNull();
+		expect( connection.capabilities.canSyncDatabase ).toBe( false );
+		expect( syncConnectionSchema.parse( connection ) ).toEqual( connection );
+	} );
+
+	it( 'requires credentials for runtime self-hosted REST content connections', () => {
+		const connection = selfHostedRestConnectionWithAuthSchema.parse( {
 			id: 'connection-id',
 			localSiteId: 'local-site-id',
 			provider: 'self-hosted-rest',
@@ -48,10 +70,13 @@ describe( 'sync provider types', () => {
 			},
 		} );
 
-		expect( connection.lastPullTimestamp ).toBeNull();
-		expect( connection.lastPushTimestamp ).toBeNull();
-		expect( connection.capabilities.canSyncDatabase ).toBe( false );
-		expect( syncConnectionSchema.parse( connection ) ).toEqual( connection );
+		expect( connection.auth.username ).toBe( 'admin' );
+		expect(
+			selfHostedRestConnectionWithAuthSchema.safeParse( {
+				...connection,
+				auth: undefined,
+			} ).success
+		).toBe( false );
 	} );
 } );
 
