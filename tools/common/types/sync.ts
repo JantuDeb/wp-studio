@@ -280,3 +280,13 @@ export type SelfHostedSshPullOptions = z.infer< typeof selfHostedSshPullOptionsS
 
 export const selfHostedSshPushOptionsSchema = selfHostedSshPullOptionsSchema;
 export type SelfHostedSshPushOptions = z.infer< typeof selfHostedSshPushOptionsSchema >;
+
+export const selfHostedSshBackupSchema = z.object( {
+	id: z.string(),
+	createdAt: z.string(),
+	archivePath: z.string(),
+	includeDatabase: z.boolean(),
+	selectedPaths: z.array( z.string() ),
+	sizeInBytes: z.number().nonnegative(),
+} );
+export type SelfHostedSshBackup = z.infer< typeof selfHostedSshBackupSchema >;

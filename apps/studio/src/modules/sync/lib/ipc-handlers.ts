@@ -22,6 +22,7 @@ import wpcomFactory from '@studio/common/lib/wpcom-factory';
 import wpcomXhrRequest from '@studio/common/lib/wpcom-xhr-request-factory';
 import {
 	selfHostedRestConnectionWithAuthSchema,
+	selfHostedSshBackupSchema,
 	selfHostedSshPullOptionsSchema,
 	selfHostedSshPushOptionsSchema,
 	selfHostedSshConnectionWithAuthSchema,
@@ -29,6 +30,7 @@ import {
 	SyncSite,
 	type SelfHostedSshPullOptions,
 	type SelfHostedSshPushOptions,
+	type SelfHostedSshBackup,
 	type SelfHostedRestConnectionWithAuth,
 	type SelfHostedSshConnectionWithAuth,
 } from '@studio/common/types/sync';
@@ -1049,6 +1051,18 @@ async function uploadSftpFile(
 	} );
 }
 
+async function readSftpFile( sftp: SFTPWrapper, remotePath: string ): Promise< Buffer > {
+	return new Promise( ( resolve, reject ) => {
+		sftp.readFile( remotePath, ( error, contents ) => {
+			if ( error ) {
+				reject( error );
+				return;
+			}
+			resolve( contents );
+		} );
+	} );
+}
+
 async function createSelfHostedSshPullArchive(
 	connection: SelfHostedSshConnectionWithAuth,
 	localSiteId: string,
@@ -1158,7 +1172,17 @@ function getSshPushRestoreCommand(
 	const workDir = quoteRemoteShellArg( remoteWorkDir );
 	const remoteArchivePath = `${ remoteWorkDir }/studio-push.tar.gz`;
 	const backupDirectory = `${ remoteWordPressPath }/.studio-backups`;
-	const backupPath = `${ backupDirectory }/studio-backup-${ Date.now() }.tar.gz`;
+	const backupId = `studio-backup-${ Date.now() }.tar.gz`;
+	const backupPath = `${ backupDirectory }/${ backupId }`;
+	const backupManifestPath = `${ backupPath }.json`;
+	const backupManifest = JSON.stringify( {
+		id: backupId,
+		createdAt: new Date().toISOString(),
+		archivePath: backupPath,
+		includeDatabase,
+		selectedPaths,
+		sizeInBytes: 0,
+	} );
 	const commands = [
 		'set -e',
 		`test -d ${ remotePath }`,
@@ -1195,7 +1219,12 @@ function getSshPushRestoreCommand(
 		}
 	}
 
-	commands.push( `tar -czf ${ quoteRemoteShellArg( backupPath ) } -C ${ workDir }/backup .` );
+	commands.push(
+		`tar -czf ${ quoteRemoteShellArg( backupPath ) } -C ${ workDir }/backup .`,
+		`printf '%s' ${ quoteRemoteShellArg( backupManifest ) } > ${ quoteRemoteShellArg(
+			backupManifestPath
+		) }`
+	);
 
 	if ( includeWpContent ) {
 		commands.push( `mkdir -p ${ remotePath }/wp-content` );
@@ -1241,6 +1270,225 @@ function getSshPushRestoreCommand(
 
 	commands.push( `printf '%s\\n' ${ quoteRemoteShellArg( backupPath ) }` );
 	return { command: commands.join( ' && ' ), remoteArchivePath, backupPath };
+}
+
+function getSelfHostedSshBackupDirectory( connection: SelfHostedSshConnectionWithAuth ): string {
+	return path.posix.join(
+		connection.auth.remoteWordPressPath.replace( /\/+$/, '' ),
+		'.studio-backups'
+	);
+}
+
+async function readSelfHostedSshBackupManifest(
+	sftp: SFTPWrapper,
+	backupDirectory: string,
+	manifestName: string
+): Promise< SelfHostedSshBackup > {
+	if ( ! /^studio-(?:backup|pre-restore)-\d+\.tar\.gz\.json$/.test( manifestName ) ) {
+		throw new Error( 'Invalid SSH backup manifest name.' );
+	}
+	const manifestPath = path.posix.join( backupDirectory, manifestName );
+	const parsed = selfHostedSshBackupSchema.parse(
+		JSON.parse( ( await readSftpFile( sftp, manifestPath ) ).toString( 'utf8' ) )
+	);
+	const expectedArchivePath = path.posix.join(
+		backupDirectory,
+		manifestName.replace( /\.json$/, '' )
+	);
+	if ( parsed.archivePath !== expectedArchivePath ) {
+		throw new Error( 'SSH backup archive path does not match its manifest.' );
+	}
+	return {
+		...parsed,
+		selectedPaths: parsed.selectedPaths.map( normalizeSelfHostedWpContentPath ),
+	};
+}
+
+export async function listSelfHostedSshBackups(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string
+): Promise< SelfHostedSshBackup[] > {
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+	const backupDirectory = getSelfHostedSshBackupDirectory( parsed );
+	const client = await connectSshClient( parsed );
+
+	try {
+		const sftp = await getSftpClient( client );
+		let entries: FileEntryWithStats[];
+		try {
+			entries = await readSftpDirectory( sftp, backupDirectory );
+		} catch {
+			sftp.end();
+			return [];
+		}
+		const backups: SelfHostedSshBackup[] = [];
+		for ( const entry of entries ) {
+			if ( ! entry.filename.endsWith( '.tar.gz.json' ) ) {
+				continue;
+			}
+			try {
+				const backup = await readSelfHostedSshBackupManifest(
+					sftp,
+					backupDirectory,
+					entry.filename
+				);
+				const archiveEntry = entries.find( ( candidate ) => candidate.filename === backup.id );
+				if ( archiveEntry ) {
+					backups.push( { ...backup, sizeInBytes: archiveEntry.attrs.size } );
+				}
+			} catch {
+				// Ignore incomplete or invalid backup pairs.
+			}
+		}
+		sftp.end();
+		return backups.sort( ( a, b ) => b.createdAt.localeCompare( a.createdAt ) );
+	} finally {
+		client.end();
+	}
+}
+
+function getSshBackupRestoreCommand(
+	connection: SelfHostedSshConnectionWithAuth,
+	backup: SelfHostedSshBackup,
+	remoteWorkDir: string
+): { command: string; safetyBackupPath: string } {
+	const wpCliPath = quoteRemoteShellArg( connection.auth.wpCliPath?.trim() || 'wp' );
+	const remoteWordPressPath = connection.auth.remoteWordPressPath.replace( /\/+$/, '' );
+	const remotePath = quoteRemoteShellArg( remoteWordPressPath );
+	const workDir = quoteRemoteShellArg( remoteWorkDir );
+	const backupDirectory = getSelfHostedSshBackupDirectory( connection );
+	const safetyBackupId = `studio-pre-restore-${ Date.now() }.tar.gz`;
+	const safetyBackupPath = path.posix.join( backupDirectory, safetyBackupId );
+	const safetyManifest = JSON.stringify( {
+		id: safetyBackupId,
+		createdAt: new Date().toISOString(),
+		archivePath: safetyBackupPath,
+		includeDatabase: backup.includeDatabase,
+		selectedPaths: backup.selectedPaths,
+		sizeInBytes: 0,
+	} );
+	const commands = [
+		'set -e',
+		`test -f ${ quoteRemoteShellArg( backup.archivePath ) }`,
+		`mkdir -p ${ workDir }/restore ${ workDir }/safety/sql ${ workDir }/safety/wp-content`,
+	];
+
+	if ( backup.includeDatabase ) {
+		commands.push(
+			`${ wpCliPath } db export ${ workDir }/safety/sql/database.sql --path=${ remotePath } --add-drop-table`
+		);
+	}
+
+	for ( const selectedPath of backup.selectedPaths ) {
+		if ( selectedPath === '' ) {
+			commands.push( `cp -a ${ remotePath }/wp-content/. ${ workDir }/safety/wp-content/` );
+			continue;
+		}
+		const currentSource = quoteRemoteShellArg(
+			path.posix.join( remoteWordPressPath, 'wp-content', selectedPath )
+		);
+		const safetyDestination = quoteRemoteShellArg(
+			path.posix.join( remoteWorkDir, 'safety', 'wp-content', selectedPath )
+		);
+		const safetyParent = quoteRemoteShellArg(
+			path.posix.dirname( path.posix.join( remoteWorkDir, 'safety', 'wp-content', selectedPath ) )
+		);
+		commands.push(
+			`if test -e ${ currentSource }; then mkdir -p ${ safetyParent } && cp -a ${ currentSource } ${ safetyDestination }; fi`
+		);
+	}
+
+	commands.push(
+		`tar -czf ${ quoteRemoteShellArg( safetyBackupPath ) } -C ${ workDir }/safety .`,
+		`printf '%s' ${ quoteRemoteShellArg( safetyManifest ) } > ${ quoteRemoteShellArg(
+			`${ safetyBackupPath }.json`
+		) }`,
+		`tar -xzf ${ quoteRemoteShellArg( backup.archivePath ) } -C ${ workDir }/restore`
+	);
+
+	for ( const selectedPath of backup.selectedPaths ) {
+		if ( selectedPath === '' ) {
+			commands.push(
+				`find ${ remotePath }/wp-content -mindepth 1 -maxdepth 1 -exec rm -rf {} +`,
+				`cp -a ${ workDir }/restore/wp-content/. ${ remotePath }/wp-content/`
+			);
+			continue;
+		}
+		const restoreSource = quoteRemoteShellArg(
+			path.posix.join( remoteWorkDir, 'restore', 'wp-content', selectedPath )
+		);
+		const destination = quoteRemoteShellArg(
+			path.posix.join( remoteWordPressPath, 'wp-content', selectedPath )
+		);
+		const destinationParent = quoteRemoteShellArg(
+			path.posix.dirname( path.posix.join( remoteWordPressPath, 'wp-content', selectedPath ) )
+		);
+		commands.push(
+			`rm -rf ${ destination }`,
+			`if test -e ${ restoreSource }; then mkdir -p ${ destinationParent } && cp -a ${ restoreSource } ${ destination }; fi`
+		);
+	}
+
+	if ( backup.includeDatabase ) {
+		commands.push(
+			`sql_file=$(find ${ workDir }/restore/sql -type f -name '*.sql' | head -n 1)`,
+			`test -n "$sql_file"`,
+			`${ wpCliPath } db reset --yes --path=${ remotePath }`,
+			`${ wpCliPath } db import "$sql_file" --path=${ remotePath }`,
+			`(${ wpCliPath } cache flush --path=${ remotePath } || true)`
+		);
+	}
+
+	commands.push( `printf '%s\\n' ${ quoteRemoteShellArg( safetyBackupPath ) }` );
+	return { command: commands.join( ' && ' ), safetyBackupPath };
+}
+
+export async function restoreSelfHostedSshBackup(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string,
+	backupId: string
+): Promise< { safetyBackupPath: string } > {
+	if ( ! /^studio-(?:backup|pre-restore)-\d+\.tar\.gz$/.test( backupId ) ) {
+		throw new Error( 'Invalid SSH backup identifier.' );
+	}
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+	if ( parsed.environmentType === 'production' ) {
+		throw new Error( 'SSH backup restore is disabled for production connections.' );
+	}
+	const client = await connectSshClient( parsed );
+	const backupDirectory = getSelfHostedSshBackupDirectory( parsed );
+	const remoteWorkDir = getRemoteStudioSyncWorkDir( parsed );
+
+	try {
+		const sftp = await getSftpClient( client );
+		const backup = await readSelfHostedSshBackupManifest(
+			sftp,
+			backupDirectory,
+			`${ backupId }.json`
+		);
+		sftp.end();
+		const { command, safetyBackupPath } = getSshBackupRestoreCommand(
+			parsed,
+			backup,
+			remoteWorkDir
+		);
+		await runConnectedSshCommand( client, command );
+		return { safetyBackupPath };
+	} finally {
+		await runConnectedSshCommand(
+			client,
+			`rm -rf ${ quoteRemoteShellArg( remoteWorkDir ) }`
+		).catch( () => undefined );
+		client.end();
+	}
 }
 
 function getRestAuthHeader( username: string, applicationPassword: string ): string {

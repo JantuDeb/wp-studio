@@ -1,3 +1,4 @@
+import { selfHostedSshBackupSchema } from '@studio/common/types/sync';
 import { describe, expect, it } from 'vitest';
 import { TreeNode } from 'src/components/tree-view';
 import {
@@ -146,5 +147,36 @@ describe( 'convertTreeToSelfHostedSshPushOptions', () => {
 			optionsToSync: [ 'plugins' ],
 			specificSelectionPaths: [ 'plugins/example' ],
 		} );
+	} );
+} );
+
+describe( 'selfHostedSshBackupSchema', () => {
+	it( 'accepts a scoped SSH backup manifest', () => {
+		expect(
+			selfHostedSshBackupSchema.parse( {
+				id: 'studio-backup-1718700000000.tar.gz',
+				createdAt: '2026-06-18T10:00:00.000Z',
+				archivePath: '/var/www/example/.studio-backups/studio-backup-1718700000000.tar.gz',
+				includeDatabase: true,
+				selectedPaths: [ 'plugins/example', 'uploads/2026' ],
+				sizeInBytes: 1024,
+			} )
+		).toMatchObject( {
+			includeDatabase: true,
+			selectedPaths: [ 'plugins/example', 'uploads/2026' ],
+		} );
+	} );
+
+	it( 'rejects invalid backup sizes', () => {
+		expect( () =>
+			selfHostedSshBackupSchema.parse( {
+				id: 'studio-backup-1718700000000.tar.gz',
+				createdAt: '2026-06-18T10:00:00.000Z',
+				archivePath: '/var/www/example/.studio-backups/studio-backup-1718700000000.tar.gz',
+				includeDatabase: false,
+				selectedPaths: [ 'themes/example' ],
+				sizeInBytes: -1,
+			} )
+		).toThrow();
 	} );
 } );

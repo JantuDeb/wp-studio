@@ -184,7 +184,29 @@ Included:
 
 Still pending:
 
-- [ ] Backup browser and one-click rollback.
+- [x] Backup browser and one-click rollback.
 - [ ] Push dry-run with remote archive size and disk-space estimates.
 - [ ] Progress events for export, upload, backup, restore, and search-replace.
 - [ ] Production file push policy; production database push remains disabled.
+
+## SSH Backup Restore Addendum
+
+Studio can list and restore backups created by guarded SSH pushes for staging and development connections.
+
+Included:
+
+- [x] Write a JSON sidecar manifest for each new SSH push backup.
+- [x] Record database inclusion and exact `wp-content` selection paths.
+- [x] List valid backup/archive pairs from `<wordpress-path>/.studio-backups/`.
+- [x] Show backup timestamp, scope, and archive size.
+- [x] Allow production connections to browse backups while keeping restore disabled.
+- [x] Restore only the database and paths recorded in the backup manifest.
+- [x] Remove a selected path during rollback when it did not exist before the original push.
+- [x] Create and retain a pre-restore safety backup before applying rollback.
+- [x] Reject malformed backup identifiers, paths outside the backup directory, and production restores.
+
+Limitations:
+
+- Backups created before manifests were introduced are not shown.
+- Backup deletion and retention policies are not implemented yet.
+- Restore progress and automatic verification are still pending.

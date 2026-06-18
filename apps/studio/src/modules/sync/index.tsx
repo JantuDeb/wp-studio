@@ -2,6 +2,7 @@ import { CheckboxControl, Notice, Spinner } from '@wordpress/components';
 import { sprintf } from '@wordpress/i18n';
 import { check, Icon } from '@wordpress/icons';
 import { useI18n } from '@wordpress/react-i18n';
+import { format } from 'date-fns';
 import { PropsWithChildren, useEffect, useState } from 'react';
 import { ArrowIcon } from 'src/components/arrow-icon';
 import Button from 'src/components/button';
@@ -36,6 +37,7 @@ import { useGetWpComSitesQuery } from 'src/stores/sync/wpcom-sites';
 import type {
 	SelfHostedSshPullOptions,
 	SelfHostedSshPushOptions,
+	SelfHostedSshBackup,
 	SyncConnection,
 	SyncSite,
 } from '@studio/common/types/sync';
@@ -176,6 +178,7 @@ function SelfHostedConnectionsList( {
 	onChooseContent,
 	onPullSshSite,
 	onPushSshSite,
+	onManageSshBackups,
 	pushingConnectionId,
 	pullingConnectionId,
 }: {
@@ -185,6 +188,7 @@ function SelfHostedConnectionsList( {
 	onChooseContent: ( connectionId: string ) => void;
 	onPullSshSite: ( connection: SelfHostedSyncConnection ) => void;
 	onPushSshSite: ( connection: SelfHostedSyncConnection ) => void;
+	onManageSshBackups: ( connection: SelfHostedSyncConnection ) => void;
 	pushingConnectionId: string | null;
 	pullingConnectionId: string | null;
 } ) {
@@ -262,11 +266,115 @@ function SelfHostedConnectionsList( {
 									? __( 'Pushing…' )
 									: __( 'Push to remote' ) }
 							</Button>
+							<Button
+								variant="secondary"
+								disabled={ connection.provider !== 'self-hosted-ssh' }
+								onClick={ () => onManageSshBackups( connection ) }
+							>
+								{ __( 'Backups' ) }
+							</Button>
 						</div>
 					</div>
 				) ) }
 			</div>
 		</div>
+	);
+}
+
+function formatBackupSize( bytes: number ): string {
+	if ( bytes < 1024 * 1024 ) {
+		return `${ Math.max( 1, Math.round( bytes / 1024 ) ) } KB`;
+	}
+	return `${ ( bytes / ( 1024 * 1024 ) ).toFixed( 1 ) } MB`;
+}
+
+function SelfHostedSshBackupsModal( {
+	backups,
+	isLoading,
+	canRestore,
+	restoringBackupId,
+	onRestore,
+	onRequestClose,
+}: {
+	backups: SelfHostedSshBackup[];
+	isLoading: boolean;
+	canRestore: boolean;
+	restoringBackupId: string | null;
+	onRestore: ( backup: SelfHostedSshBackup ) => void;
+	onRequestClose: () => void;
+} ) {
+	const { __ } = useI18n();
+
+	return (
+		<Modal
+			className="w-[90%] max-w-[760px] max-h-[82vh] [&>div]:!p-0"
+			onRequestClose={ onRequestClose }
+			title={ __( 'Remote backups' ) }
+		>
+			<div className="px-8 pb-6">
+				<Notice status="warning" isDismissible={ false } className="mb-4">
+					{ __(
+						'Restoring a backup modifies the remote site. Studio creates another safety backup before the restore begins.'
+					) }
+				</Notice>
+				{ ! canRestore && (
+					<Notice status="info" isDismissible={ false } className="mb-4">
+						{ __( 'Backup restore is disabled for production connections.' ) }
+					</Notice>
+				) }
+				{ isLoading ? (
+					<div className="flex items-center gap-2 py-6 text-frame-text-secondary">
+						<Spinner className="!m-0 [&>circle]:stroke-frame-text-secondary" />
+						{ __( 'Loading backups…' ) }
+					</div>
+				) : backups.length === 0 ? (
+					<div className="py-6 text-sm text-frame-text-secondary">
+						{ __( 'No Studio SSH backups were found for this connection.' ) }
+					</div>
+				) : (
+					<div className="max-h-[52vh] overflow-y-auto border border-frame-border rounded-sm">
+						{ backups.map( ( backup ) => (
+							<div
+								key={ backup.id }
+								className="flex items-center justify-between gap-4 border-b border-frame-border last:border-b-0 p-4"
+							>
+								<div className="min-w-0">
+									<div className="text-sm font-medium text-frame-text">
+										{ format( new Date( backup.createdAt ), 'MMM d, y, h:mm a' ) }
+									</div>
+									<div className="text-xs text-frame-text-secondary mt-1">
+										{ backup.includeDatabase ? __( 'Database' ) : __( 'Files only' ) }
+										{ backup.selectedPaths.length > 0
+											? ` · ${ sprintf( __( '%d file selections' ), backup.selectedPaths.length ) }`
+											: '' }
+										{ ` · ${ formatBackupSize( backup.sizeInBytes ) }` }
+									</div>
+									<div className="text-xs text-frame-text-secondary mt-1 truncate">
+										{ backup.id }
+									</div>
+								</div>
+								<Button
+									variant="secondary"
+									disabled={ ! canRestore || Boolean( restoringBackupId ) }
+									onClick={ () => onRestore( backup ) }
+								>
+									{ restoringBackupId === backup.id ? __( 'Restoring…' ) : __( 'Restore' ) }
+								</Button>
+							</div>
+						) ) }
+					</div>
+				) }
+				<div className="flex justify-end mt-5">
+					<Button
+						variant="link"
+						onClick={ onRequestClose }
+						disabled={ Boolean( restoringBackupId ) }
+					>
+						{ __( 'Close' ) }
+					</Button>
+				</div>
+			</div>
+		</Modal>
 	);
 }
 
@@ -492,6 +600,12 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 		null
 	);
 	const [ sshSyncType, setSshSyncType ] = useState< 'pull' | 'push' >( 'pull' );
+	const [ backupConnection, setBackupConnection ] = useState< SelfHostedSshConnection | null >(
+		null
+	);
+	const [ sshBackups, setSshBackups ] = useState< SelfHostedSshBackup[] >( [] );
+	const [ isLoadingSshBackups, setIsLoadingSshBackups ] = useState( false );
+	const [ restoringBackupId, setRestoringBackupId ] = useState< string | null >( null );
 
 	const connectedSiteIds = connectedSites.map( ( { id } ) => id );
 	// Subscribe to /me/sites so reconcileConnectedSites runs on page load to
@@ -715,6 +829,62 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 		}
 	};
 
+	const handleManageSelfHostedSshBackups = async ( connection: SelfHostedSshConnection ) => {
+		setBackupConnection( connection );
+		setIsLoadingSshBackups( true );
+		try {
+			setSshBackups( await getIpcApi().listSelfHostedSshBackups( selectedSite.id, connection.id ) );
+		} catch ( error ) {
+			setBackupConnection( null );
+			getIpcApi().showErrorMessageBox( {
+				title: __( 'Failed to load backups' ),
+				message: error instanceof Error ? error.message : __( 'Please try again.' ),
+			} );
+		} finally {
+			setIsLoadingSshBackups( false );
+		}
+	};
+
+	const handleRestoreSelfHostedSshBackup = async (
+		connection: SelfHostedSshConnection,
+		backup: SelfHostedSshBackup
+	) => {
+		const CANCEL_BUTTON_INDEX = 1;
+		const RESTORE_BUTTON_INDEX = 0;
+		const { response } = await getIpcApi().showMessageBox( {
+			message: __( 'Restore this remote backup?' ),
+			detail: __(
+				'Studio will create a new safety backup of the current remote data, then restore the selected database and file paths from this archive.'
+			),
+			buttons: [ __( 'Create safety backup and restore' ), __( 'Cancel' ) ],
+			cancelId: CANCEL_BUTTON_INDEX,
+		} );
+		if ( response !== RESTORE_BUTTON_INDEX ) {
+			return;
+		}
+
+		setRestoringBackupId( backup.id );
+		try {
+			const { safetyBackupPath } = await getIpcApi().restoreSelfHostedSshBackup(
+				selectedSite.id,
+				connection.id,
+				backup.id
+			);
+			getIpcApi().showNotification( {
+				title: __( 'Backup restored' ),
+				body: sprintf( __( 'Pre-restore safety backup retained at %s.' ), safetyBackupPath ),
+			} );
+			setSshBackups( await getIpcApi().listSelfHostedSshBackups( selectedSite.id, connection.id ) );
+		} catch ( error ) {
+			getIpcApi().showErrorMessageBox( {
+				title: __( 'Failed to restore backup' ),
+				message: error instanceof Error ? error.message : __( 'Please try again.' ),
+			} );
+		} finally {
+			setRestoringBackupId( null );
+		}
+	};
+
 	const handleSiteSelection = async ( selectedSiteFromList: SyncSite ) => {
 		if ( reduxModalMode === 'push' || reduxModalMode === 'pull' ) {
 			dispatch( connectedSitesActions.openModal( reduxModalMode ) );
@@ -757,6 +927,11 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 								) {
 									setSshSyncType( 'push' );
 									setSshSyncConnection( connection );
+								}
+							} }
+							onManageSshBackups={ ( connection ) => {
+								if ( connection.provider === 'self-hosted-ssh' ) {
+									void handleManageSelfHostedSshBackups( connection );
 								}
 							} }
 							pushingConnectionId={ pushingConnectionId }
@@ -890,6 +1065,21 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 					} }
 					onPull={ ( options ) => handlePullSelfHostedSshSite( sshSyncConnection, options ) }
 					onPush={ ( options ) => handlePushSelfHostedSshSite( sshSyncConnection, options ) }
+				/>
+			) }
+
+			{ backupConnection && (
+				<SelfHostedSshBackupsModal
+					backups={ sshBackups }
+					isLoading={ isLoadingSshBackups }
+					canRestore={ backupConnection.environmentType !== 'production' }
+					restoringBackupId={ restoringBackupId }
+					onRequestClose={ () => {
+						if ( ! restoringBackupId ) {
+							setBackupConnection( null );
+						}
+					} }
+					onRestore={ ( backup ) => handleRestoreSelfHostedSshBackup( backupConnection, backup ) }
 				/>
 			) }
 

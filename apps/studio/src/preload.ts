@@ -145,6 +145,8 @@ const api: IpcApi = {
 		ipcRendererInvoke( 'listSelfHostedRestContent', localSiteId ),
 	listSelfHostedSshFiles: ( localSiteId, connectionId, selectedPath ) =>
 		ipcRendererInvoke( 'listSelfHostedSshFiles', localSiteId, connectionId, selectedPath ),
+	listSelfHostedSshBackups: ( localSiteId, connectionId ) =>
+		ipcRendererInvoke( 'listSelfHostedSshBackups', localSiteId, connectionId ),
 	previewSelfHostedRestContentPush: ( localSiteId, connectionId, options ) =>
 		ipcRendererInvoke( 'previewSelfHostedRestContentPush', localSiteId, connectionId, options ),
 	pushSelfHostedRestContent: ( localSiteId, connectionId, options ) =>
@@ -153,6 +155,8 @@ const api: IpcApi = {
 		ipcRendererInvoke( 'pushSelfHostedSshSite', localSiteId, connectionId, options ),
 	pullSelfHostedSshSite: ( localSiteId, connectionId, options ) =>
 		ipcRendererInvoke( 'pullSelfHostedSshSite', localSiteId, connectionId, options ),
+	restoreSelfHostedSshBackup: ( localSiteId, connectionId, backupId ) =>
+		ipcRendererInvoke( 'restoreSelfHostedSshBackup', localSiteId, connectionId, backupId ),
 	pullSiteFromLive: ( siteFolder, remoteSiteId ) =>
 		ipcRendererInvoke( 'pullSiteFromLive', siteFolder, remoteSiteId ),
 	addSyncOperation: ( id, status ) => ipcRendererSend( 'addSyncOperation', id, status ),
