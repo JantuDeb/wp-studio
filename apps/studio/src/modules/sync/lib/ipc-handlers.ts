@@ -26,6 +26,7 @@ import {
 	selfHostedSshPullOptionsSchema,
 	selfHostedSshPushOptionsSchema,
 	selfHostedSshConnectionWithAuthSchema,
+	selfHostedSshMaintenanceActionSchema,
 	SyncConnection,
 	SyncSite,
 	type SelfHostedSshPullOptions,
@@ -34,6 +35,9 @@ import {
 	type SelfHostedSshPushPreflight,
 	type SelfHostedSshProgress,
 	type SelfHostedSshVerification,
+	type SelfHostedSshManagementStatus,
+	type SelfHostedSshManagedExtension,
+	type SelfHostedSshMaintenanceAction,
 	type SelfHostedRestConnectionWithAuth,
 	type SelfHostedSshConnectionWithAuth,
 } from '@studio/common/types/sync';
@@ -1117,6 +1121,208 @@ async function verifySelfHostedSshSite(
 	};
 }
 
+type WpCliExtension = {
+	name: string;
+	title?: string;
+	status?: string;
+	version?: string;
+	update?: string;
+	update_version?: string;
+};
+
+function parseWpCliExtensions( output: string ): SelfHostedSshManagedExtension[] {
+	const parsed = JSON.parse( output || '[]' ) as WpCliExtension[];
+	return parsed.map( ( extension ) => ( {
+		name: extension.name,
+		title: extension.title || extension.name,
+		status: extension.status || 'unknown',
+		version: extension.version || '',
+		updateVersion:
+			extension.update_version ||
+			( extension.update && extension.update !== 'none' ? extension.update : null ),
+	} ) );
+}
+
+export async function getSelfHostedSshManagementStatus(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string
+): Promise< SelfHostedSshManagementStatus > {
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+	const client = await connectSshClient( parsed );
+	const remoteWordPressPath = parsed.auth.remoteWordPressPath.replace( /\/+$/, '' );
+	const remotePath = quoteRemoteShellArg( remoteWordPressPath );
+	const wpCliPath = quoteRemoteShellArg( parsed.auth.wpCliPath?.trim() || 'wp' );
+
+	try {
+		const [ coreVersion, phpVersion, pluginOutput, themeOutput, cronOutput, debugOutput ] =
+			await Promise.all( [
+				runConnectedSshCommand( client, `${ wpCliPath } core version --path=${ remotePath }` ),
+				runConnectedSshCommand(
+					client,
+					`${ wpCliPath } eval 'echo PHP_VERSION;' --path=${ remotePath }`
+				),
+				runConnectedSshCommand(
+					client,
+					`${ wpCliPath } plugin list --fields=name,title,status,version,update_version --format=json --path=${ remotePath }`
+				),
+				runConnectedSshCommand(
+					client,
+					`${ wpCliPath } theme list --fields=name,title,status,version,update_version --format=json --path=${ remotePath }`
+				),
+				runConnectedSshCommand(
+					client,
+					`${ wpCliPath } cron event list --due-now --format=json --path=${ remotePath }`
+				).catch( () => '[]' ),
+				runConnectedSshCommand(
+					client,
+					`if test -f ${ quoteRemoteShellArg(
+						path.posix.join( remoteWordPressPath, 'wp-content', 'debug.log' )
+					) }; then printf 'true\\n'; wc -c < ${ quoteRemoteShellArg(
+						path.posix.join( remoteWordPressPath, 'wp-content', 'debug.log' )
+					) }; else printf 'false\\n0\\n'; fi`
+				),
+			] );
+		const [ debugExists = 'false', debugSize = '0' ] = debugOutput.trim().split( '\n' );
+		const cronEvents = JSON.parse( cronOutput || '[]' ) as unknown[];
+		return {
+			coreVersion: coreVersion.trim(),
+			phpVersion: phpVersion.trim(),
+			plugins: parseWpCliExtensions( pluginOutput ),
+			themes: parseWpCliExtensions( themeOutput ),
+			dueCronEvents: cronEvents.length,
+			debugLogExists: debugExists === 'true',
+			debugLogSizeInBytes: Number.parseInt( debugSize, 10 ) || 0,
+		};
+	} finally {
+		client.end();
+	}
+}
+
+function validateMaintenanceSlug( slug: string ): string {
+	if ( ! /^[a-zA-Z0-9._-]+$/.test( slug ) ) {
+		throw new Error( 'Invalid plugin or theme identifier.' );
+	}
+	return slug;
+}
+
+function getSshMaintenanceBackupCommand(
+	connection: SelfHostedSshConnectionWithAuth,
+	selectedPath: string
+): { command: string; backupPath: string } {
+	const remoteWordPressPath = connection.auth.remoteWordPressPath.replace( /\/+$/, '' );
+	const remotePath = quoteRemoteShellArg( remoteWordPressPath );
+	const wpCliPath = quoteRemoteShellArg( connection.auth.wpCliPath?.trim() || 'wp' );
+	const backupDirectory = getSelfHostedSshBackupDirectory( connection );
+	const backupId = `studio-backup-${ Date.now() }.tar.gz`;
+	const backupPath = path.posix.join( backupDirectory, backupId );
+	const workDirectory = `${ remoteWordPressPath }/.studio-maintenance-${ randomUUID() }`;
+	const sourcePath = path.posix.join( remoteWordPressPath, 'wp-content', selectedPath );
+	const backupTarget = path.posix.join( workDirectory, 'wp-content', selectedPath );
+	const manifest = JSON.stringify( {
+		id: backupId,
+		createdAt: new Date().toISOString(),
+		archivePath: backupPath,
+		includeDatabase: true,
+		selectedPaths: [ selectedPath ],
+		sizeInBytes: 0,
+	} );
+	const command = [
+		'set -e',
+		`mkdir -p ${ quoteRemoteShellArg( path.posix.dirname( backupTarget ) ) } ${ quoteRemoteShellArg(
+			path.posix.join( workDirectory, 'sql' )
+		) } ${ quoteRemoteShellArg( backupDirectory ) }`,
+		`${ wpCliPath } db export ${ quoteRemoteShellArg(
+			path.posix.join( workDirectory, 'sql', 'database.sql' )
+		) } --path=${ remotePath } --add-drop-table`,
+		`if test -e ${ quoteRemoteShellArg( sourcePath ) }; then cp -a ${ quoteRemoteShellArg(
+			sourcePath
+		) } ${ quoteRemoteShellArg( backupTarget ) }; fi`,
+		`tar -czf ${ quoteRemoteShellArg( backupPath ) } -C ${ quoteRemoteShellArg(
+			workDirectory
+		) } .`,
+		`printf '%s' ${ quoteRemoteShellArg( manifest ) } > ${ quoteRemoteShellArg(
+			`${ backupPath }.json`
+		) }`,
+		`rm -rf ${ quoteRemoteShellArg( workDirectory ) }`,
+	].join( ' && ' );
+	return { command, backupPath };
+}
+
+export async function runSelfHostedSshMaintenanceAction(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string,
+	action: SelfHostedSshMaintenanceAction
+): Promise< { message: string; backupPath?: string } > {
+	const parsedAction = selfHostedSshMaintenanceActionSchema.parse( action );
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+	const client = await connectSshClient( parsed );
+	const remotePath = quoteRemoteShellArg( parsed.auth.remoteWordPressPath );
+	const wpCliPath = quoteRemoteShellArg( parsed.auth.wpCliPath?.trim() || 'wp' );
+
+	try {
+		switch ( parsedAction.action ) {
+			case 'flush-cache':
+				await runConnectedSshCommand( client, `${ wpCliPath } cache flush --path=${ remotePath }` );
+				return { message: 'Remote object cache flushed.' };
+			case 'run-cron':
+				await runConnectedSshCommand(
+					client,
+					`${ wpCliPath } cron event run --due-now --path=${ remotePath }`
+				);
+				return { message: 'Due cron events executed.' };
+			case 'update-plugin':
+			case 'update-theme': {
+				if ( parsed.environmentType === 'production' ) {
+					throw new Error( 'Plugin and theme updates are disabled for production connections.' );
+				}
+				const name = validateMaintenanceSlug( parsedAction.name );
+				const directory = parsedAction.action === 'update-plugin' ? 'plugins' : 'themes';
+				const { command: backupCommand, backupPath } = getSshMaintenanceBackupCommand(
+					parsed,
+					`${ directory }/${ name }`
+				);
+				await runConnectedSshCommand( client, backupCommand );
+				const commandName =
+					parsedAction.action === 'update-plugin' ? 'plugin update' : 'theme update';
+				await runConnectedSshCommand(
+					client,
+					`${ wpCliPath } ${ commandName } ${ quoteRemoteShellArg( name ) } --path=${ remotePath }`
+				);
+				const verification = await verifySelfHostedSshSite( client, parsed );
+				if ( ! verification.ok ) {
+					const rollback = await rollbackFailedSshOperation( client, parsed, {
+						id: path.posix.basename( backupPath ),
+						createdAt: new Date().toISOString(),
+						archivePath: backupPath,
+						includeDatabase: true,
+						selectedPaths: [ `${ directory }/${ name }` ],
+						sizeInBytes: 0,
+					} );
+					throw new Error(
+						rollback.verification.ok
+							? `Update verification failed and Studio restored the previous version. Failed-state backup: ${ rollback.safetyBackupPath }.`
+							: `Update and automatic rollback verification both failed. Original backup: ${ backupPath }. Failed-state backup: ${ rollback.safetyBackupPath }.`
+					);
+				}
+				return {
+					message: `${ parsedAction.action === 'update-plugin' ? 'Plugin' : 'Theme' } updated.`,
+					backupPath,
+				};
+			}
+		}
+	} finally {
+		client.end();
+	}
+}
+
 async function readSftpFile( sftp: SFTPWrapper, remotePath: string ): Promise< Buffer > {
 	return new Promise( ( resolve, reject ) => {
 		sftp.readFile( remotePath, ( error, contents ) => {
@@ -1574,6 +1780,31 @@ function getSshBackupRestoreCommand(
 
 	commands.push( `printf '%s\\n' ${ quoteRemoteShellArg( safetyBackupPath ) }` );
 	return { command: commands.join( ' && ' ), safetyBackupPath };
+}
+
+async function rollbackFailedSshOperation(
+	client: Client,
+	connection: SelfHostedSshConnectionWithAuth,
+	backup: SelfHostedSshBackup
+): Promise< { safetyBackupPath: string; verification: SelfHostedSshVerification } > {
+	const remoteWorkDir = getRemoteStudioSyncWorkDir( connection );
+	const { command, safetyBackupPath } = getSshBackupRestoreCommand(
+		connection,
+		backup,
+		remoteWorkDir
+	);
+	try {
+		await runConnectedSshCommand( client, command );
+		return {
+			safetyBackupPath,
+			verification: await verifySelfHostedSshSite( client, connection ),
+		};
+	} finally {
+		await runConnectedSshCommand(
+			client,
+			`rm -rf ${ quoteRemoteShellArg( remoteWorkDir ) }`
+		).catch( () => undefined );
+	}
 }
 
 export async function restoreSelfHostedSshBackup(
@@ -2356,6 +2587,30 @@ export async function pushSelfHostedSshSite(
 				message: 'Verifying remote WordPress site…',
 			} );
 			const verification = await verifySelfHostedSshSite( client, parsed );
+			if ( ! verification.ok ) {
+				const { includeDatabase, selectedPaths } = getSelfHostedSshPushSelection( parsedOptions );
+				sendSelfHostedSshProgress( {
+					localSiteId,
+					connectionId,
+					operation,
+					phase: 'applying',
+					progress: 94,
+					message: 'Verification failed. Restoring the pre-push backup…',
+				} );
+				const rollback = await rollbackFailedSshOperation( client, parsed, {
+					id: path.posix.basename( backupPath ),
+					createdAt: new Date().toISOString(),
+					archivePath: backupPath,
+					includeDatabase,
+					selectedPaths,
+					sizeInBytes: 0,
+				} );
+				throw new Error(
+					rollback.verification.ok
+						? `Push verification failed and Studio automatically restored the pre-push backup. Failed-state backup: ${ rollback.safetyBackupPath }.`
+						: `Push verification and automatic rollback verification both failed. Original backup: ${ backupPath }. Failed-state backup: ${ rollback.safetyBackupPath }.`
+				);
+			}
 			await addOrUpdateSyncConnection( localSiteId, {
 				...stripSyncConnectionAuth( parsed ),
 				lastPushTimestamp: new Date().toISOString(),
@@ -2366,7 +2621,7 @@ export async function pushSelfHostedSshSite(
 				operation,
 				phase: 'finished',
 				progress: 100,
-				message: verification.ok ? 'Push verified.' : 'Push completed with verification warnings.',
+				message: 'Push verified.',
 			} );
 			return { backupPath, verification };
 		} finally {

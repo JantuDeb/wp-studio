@@ -40,6 +40,8 @@ import type {
 	SelfHostedSshPushOptions,
 	SelfHostedSshBackup,
 	SelfHostedSshProgress,
+	SelfHostedSshManagementStatus,
+	SelfHostedSshMaintenanceAction,
 	SyncConnection,
 	SyncSite,
 } from '@studio/common/types/sync';
@@ -181,6 +183,7 @@ function SelfHostedConnectionsList( {
 	onPullSshSite,
 	onPushSshSite,
 	onManageSshBackups,
+	onManageSshSite,
 	pushingConnectionId,
 	preflightingConnectionId,
 	pullingConnectionId,
@@ -193,6 +196,7 @@ function SelfHostedConnectionsList( {
 	onPullSshSite: ( connection: SelfHostedSyncConnection ) => void;
 	onPushSshSite: ( connection: SelfHostedSyncConnection ) => void;
 	onManageSshBackups: ( connection: SelfHostedSyncConnection ) => void;
+	onManageSshSite: ( connection: SelfHostedSyncConnection ) => void;
 	pushingConnectionId: string | null;
 	preflightingConnectionId: string | null;
 	pullingConnectionId: string | null;
@@ -282,6 +286,13 @@ function SelfHostedConnectionsList( {
 							>
 								{ __( 'Backups' ) }
 							</Button>
+							<Button
+								variant="secondary"
+								disabled={ connection.provider !== 'self-hosted-ssh' }
+								onClick={ () => onManageSshSite( connection ) }
+							>
+								{ __( 'Manage' ) }
+							</Button>
 						</div>
 						{ connection.provider === 'self-hosted-ssh' &&
 							sshProgress[ connection.id ] &&
@@ -297,6 +308,176 @@ function SelfHostedConnectionsList( {
 				) ) }
 			</div>
 		</div>
+	);
+}
+
+function SelfHostedSshManagementModal( {
+	connection,
+	status,
+	isLoading,
+	runningAction,
+	onRunAction,
+	onRefresh,
+	onRequestClose,
+}: {
+	connection: SelfHostedSshConnection;
+	status: SelfHostedSshManagementStatus | null;
+	isLoading: boolean;
+	runningAction: string | null;
+	onRunAction: ( action: SelfHostedSshMaintenanceAction ) => void;
+	onRefresh: () => void;
+	onRequestClose: () => void;
+} ) {
+	const { __ } = useI18n();
+	const pluginUpdates = status?.plugins.filter( ( plugin ) => plugin.updateVersion ) ?? [];
+	const themeUpdates = status?.themes.filter( ( theme ) => theme.updateVersion ) ?? [];
+	const canUpdate = connection.environmentType !== 'production';
+
+	return (
+		<Modal
+			className="w-[90%] max-w-[820px] max-h-[86vh] [&>div]:!p-0"
+			onRequestClose={ onRequestClose }
+			title={ __( 'Manage remote WordPress site' ) }
+		>
+			<div className="px-8 pb-6">
+				{ ! canUpdate && (
+					<Notice status="info" isDismissible={ false } className="mb-4">
+						{ __(
+							'Plugin and theme updates are disabled for production connections. Cache and cron actions remain available.'
+						) }
+					</Notice>
+				) }
+				{ isLoading || ! status ? (
+					<div className="flex items-center gap-2 py-8 text-frame-text-secondary">
+						<Spinner className="!m-0 [&>circle]:stroke-frame-text-secondary" />
+						{ __( 'Loading remote site status…' ) }
+					</div>
+				) : (
+					<div className="flex flex-col gap-6">
+						<div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+							{ [
+								[ __( 'WordPress' ), status.coreVersion ],
+								[ __( 'PHP' ), status.phpVersion ],
+								[ __( 'Due cron events' ), String( status.dueCronEvents ) ],
+								[
+									__( 'Debug log' ),
+									status.debugLogExists
+										? formatBackupSize( status.debugLogSizeInBytes )
+										: __( 'Not found' ),
+								],
+							].map( ( [ label, value ] ) => (
+								<div key={ label } className="border border-frame-border rounded-sm p-3">
+									<div className="text-xs text-frame-text-secondary">{ label }</div>
+									<div className="text-sm font-medium text-frame-text mt-1">{ value }</div>
+								</div>
+							) ) }
+						</div>
+						<div className="flex flex-wrap gap-3">
+							<Button
+								variant="secondary"
+								disabled={ Boolean( runningAction ) }
+								onClick={ () => onRunAction( { action: 'flush-cache' } ) }
+							>
+								{ runningAction === 'flush-cache' ? __( 'Flushing…' ) : __( 'Flush cache' ) }
+							</Button>
+							<Button
+								variant="secondary"
+								disabled={ Boolean( runningAction ) || status.dueCronEvents === 0 }
+								onClick={ () => onRunAction( { action: 'run-cron' } ) }
+							>
+								{ runningAction === 'run-cron' ? __( 'Running…' ) : __( 'Run due cron' ) }
+							</Button>
+							<Button
+								variant="secondary"
+								disabled={ Boolean( runningAction ) }
+								onClick={ onRefresh }
+							>
+								{ __( 'Refresh' ) }
+							</Button>
+						</div>
+						<div>
+							<h3 className="text-sm font-medium text-frame-text mb-2">
+								{ sprintf( __( 'Plugin updates (%d)' ), pluginUpdates.length ) }
+							</h3>
+							<div className="border border-frame-border rounded-sm">
+								{ pluginUpdates.length === 0 ? (
+									<div className="p-3 text-sm text-frame-text-secondary">
+										{ __( 'All plugins are up to date.' ) }
+									</div>
+								) : (
+									pluginUpdates.map( ( plugin ) => (
+										<div
+											key={ plugin.name }
+											className="flex items-center justify-between gap-3 border-b border-frame-border last:border-b-0 p-3"
+										>
+											<div className="min-w-0">
+												<div className="text-sm text-frame-text truncate">{ plugin.title }</div>
+												<div className="text-xs text-frame-text-secondary">
+													{ plugin.version } to { plugin.updateVersion }
+												</div>
+											</div>
+											<Button
+												variant="secondary"
+												disabled={ ! canUpdate || Boolean( runningAction ) }
+												onClick={ () =>
+													onRunAction( { action: 'update-plugin', name: plugin.name } )
+												}
+											>
+												{ runningAction === `update-plugin:${ plugin.name }`
+													? __( 'Updating…' )
+													: __( 'Update' ) }
+											</Button>
+										</div>
+									) )
+								) }
+							</div>
+						</div>
+						<div>
+							<h3 className="text-sm font-medium text-frame-text mb-2">
+								{ sprintf( __( 'Theme updates (%d)' ), themeUpdates.length ) }
+							</h3>
+							<div className="border border-frame-border rounded-sm">
+								{ themeUpdates.length === 0 ? (
+									<div className="p-3 text-sm text-frame-text-secondary">
+										{ __( 'All themes are up to date.' ) }
+									</div>
+								) : (
+									themeUpdates.map( ( theme ) => (
+										<div
+											key={ theme.name }
+											className="flex items-center justify-between gap-3 border-b border-frame-border last:border-b-0 p-3"
+										>
+											<div className="min-w-0">
+												<div className="text-sm text-frame-text truncate">{ theme.title }</div>
+												<div className="text-xs text-frame-text-secondary">
+													{ theme.version } to { theme.updateVersion }
+												</div>
+											</div>
+											<Button
+												variant="secondary"
+												disabled={ ! canUpdate || Boolean( runningAction ) }
+												onClick={ () =>
+													onRunAction( { action: 'update-theme', name: theme.name } )
+												}
+											>
+												{ runningAction === `update-theme:${ theme.name }`
+													? __( 'Updating…' )
+													: __( 'Update' ) }
+											</Button>
+										</div>
+									) )
+								) }
+							</div>
+						</div>
+					</div>
+				) }
+				<div className="flex justify-end mt-5">
+					<Button variant="link" onClick={ onRequestClose } disabled={ Boolean( runningAction ) }>
+						{ __( 'Close' ) }
+					</Button>
+				</div>
+			</div>
+		</Modal>
 	);
 }
 
@@ -661,6 +842,14 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 		null
 	);
 	const [ sshProgress, setSshProgress ] = useState< Record< string, SelfHostedSshProgress > >( {} );
+	const [ managementConnection, setManagementConnection ] =
+		useState< SelfHostedSshConnection | null >( null );
+	const [ managementStatus, setManagementStatus ] =
+		useState< SelfHostedSshManagementStatus | null >( null );
+	const [ isLoadingManagementStatus, setIsLoadingManagementStatus ] = useState( false );
+	const [ runningMaintenanceAction, setRunningMaintenanceAction ] = useState< string | null >(
+		null
+	);
 
 	const connectedSiteIds = connectedSites.map( ( { id } ) => id );
 	// Subscribe to /me/sites so reconcileConnectedSites runs on page load to
@@ -1029,6 +1218,84 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 		}
 	};
 
+	const loadSelfHostedSshManagementStatus = async ( connection: SelfHostedSshConnection ) => {
+		setIsLoadingManagementStatus( true );
+		try {
+			setManagementStatus(
+				await getIpcApi().getSelfHostedSshManagementStatus( selectedSite.id, connection.id )
+			);
+		} catch ( error ) {
+			getIpcApi().showErrorMessageBox( {
+				title: __( 'Failed to load remote site status' ),
+				message: error instanceof Error ? error.message : __( 'Please try again.' ),
+			} );
+		} finally {
+			setIsLoadingManagementStatus( false );
+		}
+	};
+
+	const handleManageSelfHostedSshSite = ( connection: SelfHostedSshConnection ) => {
+		setManagementConnection( connection );
+		setManagementStatus( null );
+		void loadSelfHostedSshManagementStatus( connection );
+	};
+
+	const getMaintenanceActionKey = ( action: SelfHostedSshMaintenanceAction ): string => {
+		if ( action.action === 'update-plugin' || action.action === 'update-theme' ) {
+			return `${ action.action }:${ action.name }`;
+		}
+		return action.action;
+	};
+
+	const handleSelfHostedSshMaintenanceAction = async (
+		connection: SelfHostedSshConnection,
+		action: SelfHostedSshMaintenanceAction
+	) => {
+		const CANCEL_BUTTON_INDEX = 1;
+		const RUN_BUTTON_INDEX = 0;
+		const isUpdate = action.action === 'update-plugin' || action.action === 'update-theme';
+		const { response } = await getIpcApi().showMessageBox( {
+			message: isUpdate
+				? __( 'Back up and update this remote component?' )
+				: action.action === 'flush-cache'
+				? __( 'Flush the remote object cache?' )
+				: __( 'Run all due remote cron events?' ),
+			detail: isUpdate
+				? __(
+						'Studio will back up the remote database and selected component before running the update.'
+				  )
+				: __( 'This maintenance action runs through WP-CLI on the configured WordPress path.' ),
+			buttons: [ isUpdate ? __( 'Back up and update' ) : __( 'Run action' ), __( 'Cancel' ) ],
+			cancelId: CANCEL_BUTTON_INDEX,
+		} );
+		if ( response !== RUN_BUTTON_INDEX ) {
+			return;
+		}
+
+		setRunningMaintenanceAction( getMaintenanceActionKey( action ) );
+		try {
+			const result = await getIpcApi().runSelfHostedSshMaintenanceAction(
+				selectedSite.id,
+				connection.id,
+				action
+			);
+			getIpcApi().showNotification( {
+				title: __( 'Remote maintenance completed' ),
+				body: result.backupPath
+					? sprintf( __( '%1$s Backup: %2$s.' ), result.message, result.backupPath )
+					: result.message,
+			} );
+			await loadSelfHostedSshManagementStatus( connection );
+		} catch ( error ) {
+			getIpcApi().showErrorMessageBox( {
+				title: __( 'Remote maintenance failed' ),
+				message: error instanceof Error ? error.message : __( 'Please try again.' ),
+			} );
+		} finally {
+			setRunningMaintenanceAction( null );
+		}
+	};
+
 	const handleRestoreSelfHostedSshBackup = async (
 		connection: SelfHostedSshConnection,
 		backup: SelfHostedSshBackup
@@ -1132,6 +1399,11 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 							onManageSshBackups={ ( connection ) => {
 								if ( connection.provider === 'self-hosted-ssh' ) {
 									void handleManageSelfHostedSshBackups( connection );
+								}
+							} }
+							onManageSshSite={ ( connection ) => {
+								if ( connection.provider === 'self-hosted-ssh' ) {
+									handleManageSelfHostedSshSite( connection );
 								}
 							} }
 							pushingConnectionId={ pushingConnectionId }
@@ -1286,6 +1558,24 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 					onRestore={ ( backup ) => handleRestoreSelfHostedSshBackup( backupConnection, backup ) }
 					onDelete={ ( backup ) => handleDeleteSelfHostedSshBackup( backupConnection, backup ) }
 					onPrune={ () => handlePruneSelfHostedSshBackups( backupConnection ) }
+				/>
+			) }
+
+			{ managementConnection && (
+				<SelfHostedSshManagementModal
+					connection={ managementConnection }
+					status={ managementStatus }
+					isLoading={ isLoadingManagementStatus }
+					runningAction={ runningMaintenanceAction }
+					onRequestClose={ () => {
+						if ( ! runningMaintenanceAction ) {
+							setManagementConnection( null );
+						}
+					} }
+					onRefresh={ () => void loadSelfHostedSshManagementStatus( managementConnection ) }
+					onRunAction={ ( action ) =>
+						void handleSelfHostedSshMaintenanceAction( managementConnection, action )
+					}
 				/>
 			) }
 

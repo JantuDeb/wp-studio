@@ -136,6 +136,8 @@ const api: IpcApi = {
 		ipcRendererInvoke( 'getConnectedWpcomSites', localSiteId ),
 	fetchSyncableWpcomSites: () => ipcRendererInvoke( 'fetchSyncableWpcomSites' ),
 	getSyncConnections: ( localSiteId ) => ipcRendererInvoke( 'getSyncConnections', localSiteId ),
+	getSelfHostedSshManagementStatus: ( localSiteId, connectionId ) =>
+		ipcRendererInvoke( 'getSelfHostedSshManagementStatus', localSiteId, connectionId ),
 	saveSyncConnection: ( localSiteId, connection ) =>
 		ipcRendererInvoke( 'saveSyncConnection', localSiteId, connection ),
 	deleteSyncConnection: ( localSiteId, connectionId ) =>
@@ -161,6 +163,8 @@ const api: IpcApi = {
 		ipcRendererInvoke( 'pullSelfHostedSshSite', localSiteId, connectionId, options ),
 	restoreSelfHostedSshBackup: ( localSiteId, connectionId, backupId ) =>
 		ipcRendererInvoke( 'restoreSelfHostedSshBackup', localSiteId, connectionId, backupId ),
+	runSelfHostedSshMaintenanceAction: ( localSiteId, connectionId, action ) =>
+		ipcRendererInvoke( 'runSelfHostedSshMaintenanceAction', localSiteId, connectionId, action ),
 	pullSiteFromLive: ( siteFolder, remoteSiteId ) =>
 		ipcRendererInvoke( 'pullSiteFromLive', siteFolder, remoteSiteId ),
 	addSyncOperation: ( id, status ) => ipcRendererSend( 'addSyncOperation', id, status ),

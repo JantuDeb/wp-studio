@@ -250,6 +250,37 @@ Included:
 
 Still pending:
 
-- [ ] Automatic rollback when post-operation verification fails.
-- [ ] Detailed plugin/theme update and vulnerability management.
-- [ ] Remote uptime, cron, debug-log, and cache status dashboard.
+- [x] Automatic rollback when post-push or component-update verification fails.
+- [x] Plugin/theme update and maintenance management.
+- [x] Remote cron, debug-log, and cache maintenance dashboard.
+- [ ] Vulnerability data and remote uptime monitoring.
+
+## SSH Site Management Addendum
+
+SSH connections now include a remote WordPress management dashboard.
+
+Included:
+
+- [x] WordPress core and PHP version display.
+- [x] Plugin and theme inventory with available update versions.
+- [x] Due cron event count.
+- [x] Remote debug-log presence and size.
+- [x] Confirmed remote object-cache flush.
+- [x] Confirmed execution of due WordPress cron events.
+- [x] Individual plugin and theme updates for staging/development.
+- [x] Database plus selected component backup before each plugin/theme update.
+- [x] Backups use the existing manifest format and are available in the backup browser.
+- [x] Post-update database verification.
+- [x] Production plugin/theme updates blocked in both UI and main process.
+- [x] Strict plugin/theme slug validation before shell command construction.
+- [x] Automatic restoration of the pre-operation backup when verification fails.
+- [x] Retain a failed-state safety backup before automatic rollback.
+
+Still pending:
+
+- [ ] Bulk update selection.
+- [ ] WordPress core update workflow.
+- [ ] Vulnerability/advisory integration.
+- [ ] Debug-log viewer and clearing controls.
+- [ ] Uptime and HTTP response monitoring.
+- [ ] Automatic rollback for manually selected backup restores.

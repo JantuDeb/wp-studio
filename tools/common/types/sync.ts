@@ -331,3 +331,37 @@ export type SelfHostedSshProgress = {
 	progress: number;
 	message: string;
 };
+
+export const selfHostedSshManagedExtensionSchema = z.object( {
+	name: z.string(),
+	title: z.string(),
+	status: z.string(),
+	version: z.string(),
+	updateVersion: z.string().nullable(),
+} );
+export type SelfHostedSshManagedExtension = z.infer< typeof selfHostedSshManagedExtensionSchema >;
+
+export const selfHostedSshManagementStatusSchema = z.object( {
+	coreVersion: z.string(),
+	phpVersion: z.string(),
+	plugins: z.array( selfHostedSshManagedExtensionSchema ),
+	themes: z.array( selfHostedSshManagedExtensionSchema ),
+	dueCronEvents: z.number().int().nonnegative(),
+	debugLogExists: z.boolean(),
+	debugLogSizeInBytes: z.number().nonnegative(),
+} );
+export type SelfHostedSshManagementStatus = z.infer< typeof selfHostedSshManagementStatusSchema >;
+
+export const selfHostedSshMaintenanceActionSchema = z.discriminatedUnion( 'action', [
+	z.object( { action: z.literal( 'flush-cache' ) } ),
+	z.object( { action: z.literal( 'run-cron' ) } ),
+	z.object( {
+		action: z.literal( 'update-plugin' ),
+		name: z.string().regex( /^[a-zA-Z0-9._-]+$/ ),
+	} ),
+	z.object( {
+		action: z.literal( 'update-theme' ),
+		name: z.string().regex( /^[a-zA-Z0-9._-]+$/ ),
+	} ),
+] );
+export type SelfHostedSshMaintenanceAction = z.infer< typeof selfHostedSshMaintenanceActionSchema >;

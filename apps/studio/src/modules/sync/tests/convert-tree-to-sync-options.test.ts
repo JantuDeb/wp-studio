@@ -2,6 +2,8 @@ import {
 	selfHostedSshBackupSchema,
 	selfHostedSshPushPreflightSchema,
 	selfHostedSshVerificationSchema,
+	selfHostedSshManagementStatusSchema,
+	selfHostedSshMaintenanceActionSchema,
 } from '@studio/common/types/sync';
 import { describe, expect, it } from 'vitest';
 import { TreeNode } from 'src/components/tree-view';
@@ -221,5 +223,41 @@ describe( 'selfHostedSshVerificationSchema', () => {
 			databaseOk: true,
 			activePluginCount: 8,
 		} );
+	} );
+} );
+
+describe( 'selfHostedSshManagementStatusSchema', () => {
+	it( 'accepts remote maintenance status', () => {
+		expect(
+			selfHostedSshManagementStatusSchema.parse( {
+				coreVersion: '6.8.1',
+				phpVersion: '8.3.8',
+				plugins: [
+					{
+						name: 'example',
+						title: 'Example',
+						status: 'active',
+						version: '1.0.0',
+						updateVersion: '1.1.0',
+					},
+				],
+				themes: [],
+				dueCronEvents: 2,
+				debugLogExists: true,
+				debugLogSizeInBytes: 2048,
+			} )
+		).toMatchObject( {
+			dueCronEvents: 2,
+			debugLogExists: true,
+		} );
+	} );
+
+	it( 'rejects unsafe maintenance extension names', () => {
+		expect( () =>
+			selfHostedSshMaintenanceActionSchema.parse( {
+				action: 'update-plugin',
+				name: '../example',
+			} )
+		).toThrow();
 	} );
 } );
