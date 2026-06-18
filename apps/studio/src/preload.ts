@@ -140,6 +140,8 @@ const api: IpcApi = {
 		ipcRendererInvoke( 'saveSyncConnection', localSiteId, connection ),
 	deleteSyncConnection: ( localSiteId, connectionId ) =>
 		ipcRendererInvoke( 'deleteSyncConnection', localSiteId, connectionId ),
+	deleteSelfHostedSshBackup: ( localSiteId, connectionId, backupId ) =>
+		ipcRendererInvoke( 'deleteSelfHostedSshBackup', localSiteId, connectionId, backupId ),
 	testSyncConnection: ( connection ) => ipcRendererInvoke( 'testSyncConnection', connection ),
 	listSelfHostedRestContent: ( localSiteId ) =>
 		ipcRendererInvoke( 'listSelfHostedRestContent', localSiteId ),
@@ -149,6 +151,8 @@ const api: IpcApi = {
 		ipcRendererInvoke( 'listSelfHostedSshBackups', localSiteId, connectionId ),
 	previewSelfHostedRestContentPush: ( localSiteId, connectionId, options ) =>
 		ipcRendererInvoke( 'previewSelfHostedRestContentPush', localSiteId, connectionId, options ),
+	previewSelfHostedSshPush: ( localSiteId, connectionId, options ) =>
+		ipcRendererInvoke( 'previewSelfHostedSshPush', localSiteId, connectionId, options ),
 	pushSelfHostedRestContent: ( localSiteId, connectionId, options ) =>
 		ipcRendererInvoke( 'pushSelfHostedRestContent', localSiteId, connectionId, options ),
 	pushSelfHostedSshSite: ( localSiteId, connectionId, options ) =>

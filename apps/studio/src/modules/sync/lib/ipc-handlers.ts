@@ -31,6 +31,7 @@ import {
 	type SelfHostedSshPullOptions,
 	type SelfHostedSshPushOptions,
 	type SelfHostedSshBackup,
+	type SelfHostedSshPushPreflight,
 	type SelfHostedRestConnectionWithAuth,
 	type SelfHostedSshConnectionWithAuth,
 } from '@studio/common/types/sync';
@@ -1279,6 +1280,68 @@ function getSelfHostedSshBackupDirectory( connection: SelfHostedSshConnectionWit
 	);
 }
 
+async function getSelfHostedSshPushDiskEstimate(
+	connection: SelfHostedSshConnectionWithAuth,
+	options: SelfHostedSshPushOptions
+): Promise< {
+	availableDiskSpaceInBytes: number;
+	estimatedBackupSizeInBytes: number;
+} > {
+	const { includeDatabase, includeWpContent, selectedPaths } =
+		getSelfHostedSshPushSelection( options );
+	const remoteWordPressPath = connection.auth.remoteWordPressPath.replace( /\/+$/, '' );
+	const remotePath = quoteRemoteShellArg( remoteWordPressPath );
+	const wpCliPath = quoteRemoteShellArg( connection.auth.wpCliPath?.trim() || 'wp' );
+	const commands = [
+		'set -e',
+		`available=$(df -Pk ${ remotePath } | awk 'NR==2 {print $4 * 1024}')`,
+		'backup_size=0',
+	];
+
+	if ( includeDatabase ) {
+		commands.push(
+			`db_size=$(${ wpCliPath } db size --size_format=b --path=${ remotePath } 2>/dev/null | tail -n 1 || printf '0')`,
+			`case "$db_size" in ''|*[!0-9]*) db_size=0 ;; esac`,
+			`backup_size=$((backup_size + db_size))`
+		);
+	}
+
+	if ( includeWpContent ) {
+		for ( const selectedPath of selectedPaths ) {
+			const targetPath =
+				selectedPath === ''
+					? path.posix.join( remoteWordPressPath, 'wp-content' )
+					: path.posix.join( remoteWordPressPath, 'wp-content', selectedPath );
+			commands.push(
+				`if test -e ${ quoteRemoteShellArg(
+					targetPath
+				) }; then path_size=$(du -sk ${ quoteRemoteShellArg(
+					targetPath
+				) } | awk '{print $1 * 1024}'); backup_size=$((backup_size + path_size)); fi`
+			);
+		}
+	}
+
+	commands.push( `printf '%s\\n%s\\n' "$available" "$backup_size"` );
+	const client = await connectSshClient( connection );
+	try {
+		const output = await runConnectedSshCommand( client, commands.join( ' && ' ) );
+		const [ available, backupSize ] = output
+			.trim()
+			.split( /\s+/ )
+			.map( ( value ) => Number.parseInt( value, 10 ) );
+		if ( ! Number.isFinite( available ) || ! Number.isFinite( backupSize ) ) {
+			throw new Error( 'Unable to determine remote disk space.' );
+		}
+		return {
+			availableDiskSpaceInBytes: available,
+			estimatedBackupSizeInBytes: backupSize,
+		};
+	} finally {
+		client.end();
+	}
+}
+
 async function readSelfHostedSshBackupManifest(
 	sftp: SFTPWrapper,
 	backupDirectory: string,
@@ -2100,5 +2163,73 @@ export async function pushSelfHostedSshSite(
 			client.end();
 		}
 		await fsPromises.rm( path.dirname( archivePath ), { recursive: true, force: true } );
+	}
+}
+
+export async function previewSelfHostedSshPush(
+	event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string,
+	options: SelfHostedSshPushOptions
+): Promise< SelfHostedSshPushPreflight > {
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+	const parsedOptions = selfHostedSshPushOptionsSchema.parse( options );
+
+	if ( parsed.environmentType === 'production' ) {
+		throw new Error(
+			'SSH push to production is disabled. Use a staging or development connection.'
+		);
+	}
+
+	const { includeDatabase, selectedPaths } = getSelfHostedSshPushSelection( parsedOptions );
+	const { archivePath } = await createSelfHostedSshPushArchive( event, localSiteId, parsedOptions );
+	try {
+		const [ archiveStats, diskEstimate ] = await Promise.all( [
+			fsPromises.stat( archivePath ),
+			getSelfHostedSshPushDiskEstimate( parsed, parsedOptions ),
+		] );
+		const requiredDiskSpaceInBytes =
+			archiveStats.size + diskEstimate.estimatedBackupSizeInBytes + 100 * 1024 * 1024;
+		return {
+			archiveSizeInBytes: archiveStats.size,
+			estimatedBackupSizeInBytes: diskEstimate.estimatedBackupSizeInBytes,
+			availableDiskSpaceInBytes: diskEstimate.availableDiskSpaceInBytes,
+			requiredDiskSpaceInBytes,
+			hasEnoughDiskSpace: diskEstimate.availableDiskSpaceInBytes >= requiredDiskSpaceInBytes,
+			includeDatabase,
+			selectedPaths,
+		};
+	} finally {
+		await fsPromises.rm( path.dirname( archivePath ), { recursive: true, force: true } );
+	}
+}
+
+export async function deleteSelfHostedSshBackup(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string,
+	backupId: string
+): Promise< void > {
+	if ( ! /^studio-(?:backup|pre-restore)-\d+\.tar\.gz$/.test( backupId ) ) {
+		throw new Error( 'Invalid SSH backup identifier.' );
+	}
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+	const backupDirectory = getSelfHostedSshBackupDirectory( parsed );
+	const archivePath = path.posix.join( backupDirectory, backupId );
+	const manifestPath = `${ archivePath }.json`;
+	const client = await connectSshClient( parsed );
+	try {
+		await runConnectedSshCommand(
+			client,
+			`rm -f ${ quoteRemoteShellArg( archivePath ) } ${ quoteRemoteShellArg( manifestPath ) }`
+		);
+	} finally {
+		client.end();
 	}
 }

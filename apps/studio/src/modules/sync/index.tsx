@@ -180,6 +180,7 @@ function SelfHostedConnectionsList( {
 	onPushSshSite,
 	onManageSshBackups,
 	pushingConnectionId,
+	preflightingConnectionId,
 	pullingConnectionId,
 }: {
 	connections: SyncConnection[];
@@ -190,6 +191,7 @@ function SelfHostedConnectionsList( {
 	onPushSshSite: ( connection: SelfHostedSyncConnection ) => void;
 	onManageSshBackups: ( connection: SelfHostedSyncConnection ) => void;
 	pushingConnectionId: string | null;
+	preflightingConnectionId: string | null;
 	pullingConnectionId: string | null;
 } ) {
 	const { __ } = useI18n();
@@ -258,11 +260,14 @@ function SelfHostedConnectionsList( {
 								disabled={
 									connection.provider !== 'self-hosted-ssh' ||
 									connection.environmentType === 'production' ||
-									pushingConnectionId === connection.id
+									pushingConnectionId === connection.id ||
+									preflightingConnectionId === connection.id
 								}
 								onClick={ () => onPushSshSite( connection ) }
 							>
-								{ pushingConnectionId === connection.id
+								{ preflightingConnectionId === connection.id
+									? __( 'Preparing…' )
+									: pushingConnectionId === connection.id
 									? __( 'Pushing…' )
 									: __( 'Push to remote' ) }
 							</Button>
@@ -293,14 +298,20 @@ function SelfHostedSshBackupsModal( {
 	isLoading,
 	canRestore,
 	restoringBackupId,
+	deletingBackupId,
 	onRestore,
+	onDelete,
+	onPrune,
 	onRequestClose,
 }: {
 	backups: SelfHostedSshBackup[];
 	isLoading: boolean;
 	canRestore: boolean;
 	restoringBackupId: string | null;
+	deletingBackupId: string | null;
 	onRestore: ( backup: SelfHostedSshBackup ) => void;
+	onDelete: ( backup: SelfHostedSshBackup ) => void;
+	onPrune: () => void;
 	onRequestClose: () => void;
 } ) {
 	const { __ } = useI18n();
@@ -332,43 +343,68 @@ function SelfHostedSshBackupsModal( {
 						{ __( 'No Studio SSH backups were found for this connection.' ) }
 					</div>
 				) : (
-					<div className="max-h-[52vh] overflow-y-auto border border-frame-border rounded-sm">
-						{ backups.map( ( backup ) => (
-							<div
-								key={ backup.id }
-								className="flex items-center justify-between gap-4 border-b border-frame-border last:border-b-0 p-4"
-							>
-								<div className="min-w-0">
-									<div className="text-sm font-medium text-frame-text">
-										{ format( new Date( backup.createdAt ), 'MMM d, y, h:mm a' ) }
-									</div>
-									<div className="text-xs text-frame-text-secondary mt-1">
-										{ backup.includeDatabase ? __( 'Database' ) : __( 'Files only' ) }
-										{ backup.selectedPaths.length > 0
-											? ` · ${ sprintf( __( '%d file selections' ), backup.selectedPaths.length ) }`
-											: '' }
-										{ ` · ${ formatBackupSize( backup.sizeInBytes ) }` }
-									</div>
-									<div className="text-xs text-frame-text-secondary mt-1 truncate">
-										{ backup.id }
-									</div>
-								</div>
+					<>
+						{ backups.length > 5 && (
+							<div className="flex justify-end mb-3">
 								<Button
 									variant="secondary"
-									disabled={ ! canRestore || Boolean( restoringBackupId ) }
-									onClick={ () => onRestore( backup ) }
+									disabled={ Boolean( restoringBackupId || deletingBackupId ) }
+									onClick={ onPrune }
 								>
-									{ restoringBackupId === backup.id ? __( 'Restoring…' ) : __( 'Restore' ) }
+									{ __( 'Keep latest 5' ) }
 								</Button>
 							</div>
-						) ) }
-					</div>
+						) }
+						<div className="max-h-[52vh] overflow-y-auto border border-frame-border rounded-sm">
+							{ backups.map( ( backup ) => (
+								<div
+									key={ backup.id }
+									className="flex items-center justify-between gap-4 border-b border-frame-border last:border-b-0 p-4"
+								>
+									<div className="min-w-0">
+										<div className="text-sm font-medium text-frame-text">
+											{ format( new Date( backup.createdAt ), 'MMM d, y, h:mm a' ) }
+										</div>
+										<div className="text-xs text-frame-text-secondary mt-1">
+											{ backup.includeDatabase ? __( 'Database' ) : __( 'Files only' ) }
+											{ backup.selectedPaths.length > 0
+												? ` · ${ sprintf(
+														__( '%d file selections' ),
+														backup.selectedPaths.length
+												  ) }`
+												: '' }
+											{ ` · ${ formatBackupSize( backup.sizeInBytes ) }` }
+										</div>
+										<div className="text-xs text-frame-text-secondary mt-1 truncate">
+											{ backup.id }
+										</div>
+									</div>
+									<div className="flex gap-3">
+										<Button
+											variant="secondary"
+											disabled={ ! canRestore || Boolean( restoringBackupId || deletingBackupId ) }
+											onClick={ () => onRestore( backup ) }
+										>
+											{ restoringBackupId === backup.id ? __( 'Restoring…' ) : __( 'Restore' ) }
+										</Button>
+										<Button
+											variant="link"
+											disabled={ Boolean( restoringBackupId || deletingBackupId ) }
+											onClick={ () => onDelete( backup ) }
+										>
+											{ deletingBackupId === backup.id ? __( 'Deleting…' ) : __( 'Delete' ) }
+										</Button>
+									</div>
+								</div>
+							) ) }
+						</div>
+					</>
 				) }
 				<div className="flex justify-end mt-5">
 					<Button
 						variant="link"
 						onClick={ onRequestClose }
-						disabled={ Boolean( restoringBackupId ) }
+						disabled={ Boolean( restoringBackupId || deletingBackupId ) }
 					>
 						{ __( 'Close' ) }
 					</Button>
@@ -606,6 +642,10 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 	const [ sshBackups, setSshBackups ] = useState< SelfHostedSshBackup[] >( [] );
 	const [ isLoadingSshBackups, setIsLoadingSshBackups ] = useState( false );
 	const [ restoringBackupId, setRestoringBackupId ] = useState< string | null >( null );
+	const [ deletingBackupId, setDeletingBackupId ] = useState< string | null >( null );
+	const [ preflightingConnectionId, setPreflightingConnectionId ] = useState< string | null >(
+		null
+	);
 
 	const connectedSiteIds = connectedSites.map( ( { id } ) => id );
 	// Subscribe to /me/sites so reconcileConnectedSites runs on page load to
@@ -788,17 +828,51 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 	) => {
 		const CANCEL_BUTTON_INDEX = 1;
 		const PUSH_BUTTON_INDEX = 0;
-		const includesDatabase =
-			options.optionsToSync.includes( 'all' ) || options.optionsToSync.includes( 'sqls' );
+		setPreflightingConnectionId( connection.id );
+		let preflight;
+		try {
+			preflight = await getIpcApi().previewSelfHostedSshPush(
+				selectedSite.id,
+				connection.id,
+				options
+			);
+		} catch ( error ) {
+			getIpcApi().showErrorMessageBox( {
+				title: __( 'Failed to prepare push' ),
+				message: error instanceof Error ? error.message : __( 'Please try again.' ),
+			} );
+			return;
+		} finally {
+			setPreflightingConnectionId( null );
+		}
+
+		if ( ! preflight.hasEnoughDiskSpace ) {
+			getIpcApi().showErrorMessageBox( {
+				title: __( 'Not enough remote disk space' ),
+				message: sprintf(
+					__( 'This push requires approximately %1$s, but the server has %2$s available.' ),
+					formatBackupSize( preflight.requiredDiskSpaceInBytes ),
+					formatBackupSize( preflight.availableDiskSpaceInBytes )
+				),
+			} );
+			return;
+		}
+
+		const selectionDescription = preflight.selectedPaths.includes( '' )
+			? __( 'all wp-content files' )
+			: sprintf( __( '%d selected wp-content paths' ), preflight.selectedPaths.length );
 		const { response } = await getIpcApi().showMessageBox( {
 			message: __( 'Push selected local data to the remote site?' ),
-			detail: includesDatabase
-				? __(
-						'Studio will create a remote backup, then replace the remote database and restore the selected wp-content files. This action is unavailable for production connections.'
-				  )
-				: __(
-						'Studio will create a remote backup, then replace the selected wp-content files. This action is unavailable for production connections.'
-				  ),
+			detail: sprintf(
+				__(
+					'Archive: %1$s. Remote backup estimate: %2$s. Available disk space: %3$s. Selection: %4$s%5$s. Studio will create a backup before restoring.'
+				),
+				formatBackupSize( preflight.archiveSizeInBytes ),
+				formatBackupSize( preflight.estimatedBackupSizeInBytes ),
+				formatBackupSize( preflight.availableDiskSpaceInBytes ),
+				selectionDescription,
+				preflight.includeDatabase ? __( ' and database' ) : ''
+			),
 			buttons: [ __( 'Back up and push' ), __( 'Cancel' ) ],
 			cancelId: CANCEL_BUTTON_INDEX,
 		} );
@@ -826,6 +900,69 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 			} );
 		} finally {
 			setPushingConnectionId( null );
+		}
+	};
+
+	const deleteSelfHostedSshBackups = async (
+		connection: SelfHostedSshConnection,
+		backups: SelfHostedSshBackup[]
+	) => {
+		for ( const backup of backups ) {
+			setDeletingBackupId( backup.id );
+			await getIpcApi().deleteSelfHostedSshBackup( selectedSite.id, connection.id, backup.id );
+		}
+		setSshBackups( await getIpcApi().listSelfHostedSshBackups( selectedSite.id, connection.id ) );
+	};
+
+	const handleDeleteSelfHostedSshBackup = async (
+		connection: SelfHostedSshConnection,
+		backup: SelfHostedSshBackup
+	) => {
+		const CANCEL_BUTTON_INDEX = 1;
+		const DELETE_BUTTON_INDEX = 0;
+		const { response } = await getIpcApi().showMessageBox( {
+			message: __( 'Delete this remote backup?' ),
+			detail: __( 'The archive and its manifest will be permanently removed from the server.' ),
+			buttons: [ __( 'Delete backup' ), __( 'Cancel' ) ],
+			cancelId: CANCEL_BUTTON_INDEX,
+		} );
+		if ( response !== DELETE_BUTTON_INDEX ) {
+			return;
+		}
+		try {
+			await deleteSelfHostedSshBackups( connection, [ backup ] );
+		} catch ( error ) {
+			getIpcApi().showErrorMessageBox( {
+				title: __( 'Failed to delete backup' ),
+				message: error instanceof Error ? error.message : __( 'Please try again.' ),
+			} );
+		} finally {
+			setDeletingBackupId( null );
+		}
+	};
+
+	const handlePruneSelfHostedSshBackups = async ( connection: SelfHostedSshConnection ) => {
+		const backupsToDelete = sshBackups.slice( 5 );
+		const CANCEL_BUTTON_INDEX = 1;
+		const DELETE_BUTTON_INDEX = 0;
+		const { response } = await getIpcApi().showMessageBox( {
+			message: sprintf( __( 'Delete %d older backups?' ), backupsToDelete.length ),
+			detail: __( 'Studio will keep the five newest backups and permanently remove the rest.' ),
+			buttons: [ __( 'Delete older backups' ), __( 'Cancel' ) ],
+			cancelId: CANCEL_BUTTON_INDEX,
+		} );
+		if ( response !== DELETE_BUTTON_INDEX ) {
+			return;
+		}
+		try {
+			await deleteSelfHostedSshBackups( connection, backupsToDelete );
+		} catch ( error ) {
+			getIpcApi().showErrorMessageBox( {
+				title: __( 'Failed to delete older backups' ),
+				message: error instanceof Error ? error.message : __( 'Please try again.' ),
+			} );
+		} finally {
+			setDeletingBackupId( null );
 		}
 	};
 
@@ -935,6 +1072,7 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 								}
 							} }
 							pushingConnectionId={ pushingConnectionId }
+							preflightingConnectionId={ preflightingConnectionId }
 							pullingConnectionId={ pullingConnectionId }
 						/>
 					</div>
@@ -1056,7 +1194,8 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 					isSyncing={
 						sshSyncType === 'pull'
 							? pullingConnectionId === sshSyncConnection.id
-							: pushingConnectionId === sshSyncConnection.id
+							: pushingConnectionId === sshSyncConnection.id ||
+							  preflightingConnectionId === sshSyncConnection.id
 					}
 					onRequestClose={ () => {
 						if ( ! pullingConnectionId ) {
@@ -1074,12 +1213,15 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 					isLoading={ isLoadingSshBackups }
 					canRestore={ backupConnection.environmentType !== 'production' }
 					restoringBackupId={ restoringBackupId }
+					deletingBackupId={ deletingBackupId }
 					onRequestClose={ () => {
-						if ( ! restoringBackupId ) {
+						if ( ! restoringBackupId && ! deletingBackupId ) {
 							setBackupConnection( null );
 						}
 					} }
 					onRestore={ ( backup ) => handleRestoreSelfHostedSshBackup( backupConnection, backup ) }
+					onDelete={ ( backup ) => handleDeleteSelfHostedSshBackup( backupConnection, backup ) }
+					onPrune={ () => handlePruneSelfHostedSshBackups( backupConnection ) }
 				/>
 			) }
 

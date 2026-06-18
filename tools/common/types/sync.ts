@@ -290,3 +290,14 @@ export const selfHostedSshBackupSchema = z.object( {
 	sizeInBytes: z.number().nonnegative(),
 } );
 export type SelfHostedSshBackup = z.infer< typeof selfHostedSshBackupSchema >;
+
+export const selfHostedSshPushPreflightSchema = z.object( {
+	archiveSizeInBytes: z.number().nonnegative(),
+	estimatedBackupSizeInBytes: z.number().nonnegative(),
+	availableDiskSpaceInBytes: z.number().nonnegative(),
+	requiredDiskSpaceInBytes: z.number().nonnegative(),
+	hasEnoughDiskSpace: z.boolean(),
+	includeDatabase: z.boolean(),
+	selectedPaths: z.array( z.string() ),
+} );
+export type SelfHostedSshPushPreflight = z.infer< typeof selfHostedSshPushPreflightSchema >;

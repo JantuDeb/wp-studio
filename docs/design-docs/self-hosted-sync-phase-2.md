@@ -185,7 +185,7 @@ Included:
 Still pending:
 
 - [x] Backup browser and one-click rollback.
-- [ ] Push dry-run with remote archive size and disk-space estimates.
+- [x] Push dry-run with remote archive size and disk-space estimates.
 - [ ] Progress events for export, upload, backup, restore, and search-replace.
 - [ ] Production file push policy; production database push remains disabled.
 
@@ -208,5 +208,26 @@ Included:
 Limitations:
 
 - Backups created before manifests were introduced are not shown.
-- Backup deletion and retention policies are not implemented yet.
+- Individual deletion and keep-latest-five retention are supported; automatic age/size policy is not.
 - Restore progress and automatic verification are still pending.
+
+## SSH Push Preflight Addendum
+
+Every SSH staging/development push now runs a preflight before confirmation.
+
+Included:
+
+- [x] Build the same local archive that will be used for the push and report its size.
+- [x] Estimate the scoped remote backup using WP-CLI database size and selected-path disk usage.
+- [x] Check available disk space on the remote WordPress filesystem.
+- [x] Reserve an additional 100 MB working margin.
+- [x] Block the push before upload when estimated required space exceeds available space.
+- [x] Show archive size, backup estimate, available space, database inclusion, and selected path count.
+- [x] Delete the temporary preview archive after preflight.
+- [x] Delete individual backup archive/manifest pairs.
+- [x] Keep the five newest backups and delete older pairs after confirmation.
+
+Still pending:
+
+- [ ] Automatic age- or size-based backup retention.
+- [ ] Transfer and remote command progress reporting.

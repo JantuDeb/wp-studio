@@ -1,4 +1,7 @@
-import { selfHostedSshBackupSchema } from '@studio/common/types/sync';
+import {
+	selfHostedSshBackupSchema,
+	selfHostedSshPushPreflightSchema,
+} from '@studio/common/types/sync';
 import { describe, expect, it } from 'vitest';
 import { TreeNode } from 'src/components/tree-view';
 import {
@@ -178,5 +181,24 @@ describe( 'selfHostedSshBackupSchema', () => {
 				sizeInBytes: -1,
 			} )
 		).toThrow();
+	} );
+} );
+
+describe( 'selfHostedSshPushPreflightSchema', () => {
+	it( 'accepts a successful disk-space preflight', () => {
+		expect(
+			selfHostedSshPushPreflightSchema.parse( {
+				archiveSizeInBytes: 100,
+				estimatedBackupSizeInBytes: 200,
+				availableDiskSpaceInBytes: 1000,
+				requiredDiskSpaceInBytes: 400,
+				hasEnoughDiskSpace: true,
+				includeDatabase: true,
+				selectedPaths: [ 'plugins/example' ],
+			} )
+		).toMatchObject( {
+			hasEnoughDiskSpace: true,
+			includeDatabase: true,
+		} );
 	} );
 } );
