@@ -32,6 +32,8 @@ import {
 	type SelfHostedSshPushOptions,
 	type SelfHostedSshBackup,
 	type SelfHostedSshPushPreflight,
+	type SelfHostedSshProgress,
+	type SelfHostedSshVerification,
 	type SelfHostedRestConnectionWithAuth,
 	type SelfHostedSshConnectionWithAuth,
 } from '@studio/common/types/sync';
@@ -1023,33 +1025,96 @@ async function getSftpClient( client: Client ): Promise< SFTPWrapper > {
 async function downloadSftpFile(
 	sftp: SFTPWrapper,
 	remotePath: string,
-	localPath: string
+	localPath: string,
+	onProgress?: ( progress: number ) => void
 ): Promise< void > {
 	return new Promise( ( resolve, reject ) => {
-		sftp.fastGet( remotePath, localPath, ( error ) => {
-			if ( error ) {
-				reject( error );
-				return;
+		sftp.fastGet(
+			remotePath,
+			localPath,
+			{
+				step: ( total, _chunk, fileSize ) => {
+					if ( fileSize > 0 ) {
+						onProgress?.( Math.min( 100, ( total / fileSize ) * 100 ) );
+					}
+				},
+			},
+			( error ) => {
+				if ( error ) {
+					reject( error );
+					return;
+				}
+				resolve();
 			}
-			resolve();
-		} );
+		);
 	} );
 }
 
 async function uploadSftpFile(
 	sftp: SFTPWrapper,
 	localPath: string,
-	remotePath: string
+	remotePath: string,
+	onProgress?: ( progress: number ) => void
 ): Promise< void > {
 	return new Promise( ( resolve, reject ) => {
-		sftp.fastPut( localPath, remotePath, ( error ) => {
-			if ( error ) {
-				reject( error );
-				return;
+		sftp.fastPut(
+			localPath,
+			remotePath,
+			{
+				step: ( total, _chunk, fileSize ) => {
+					if ( fileSize > 0 ) {
+						onProgress?.( Math.min( 100, ( total / fileSize ) * 100 ) );
+					}
+				},
+			},
+			( error ) => {
+				if ( error ) {
+					reject( error );
+					return;
+				}
+				resolve();
 			}
-			resolve();
-		} );
+		);
 	} );
+}
+
+function sendSelfHostedSshProgress( progress: SelfHostedSshProgress ): void {
+	void sendIpcEventToRenderer( 'self-hosted-ssh-progress', progress );
+}
+
+async function verifySelfHostedSshSite(
+	client: Client,
+	connection: SelfHostedSshConnectionWithAuth
+): Promise< SelfHostedSshVerification > {
+	const remotePath = quoteRemoteShellArg( connection.auth.remoteWordPressPath );
+	const wpCliPath = quoteRemoteShellArg( connection.auth.wpCliPath?.trim() || 'wp' );
+	const command = [
+		'set -e',
+		`core_version=$(${ wpCliPath } core version --path=${ remotePath })`,
+		`site_url=$(${ wpCliPath } option get siteurl --path=${ remotePath })`,
+		`home_url=$(${ wpCliPath } option get home --path=${ remotePath })`,
+		`active_plugins=$(${ wpCliPath } plugin list --status=active --field=name --path=${ remotePath } | wc -l | tr -d ' ')`,
+		`if ${ wpCliPath } db check --quiet --path=${ remotePath }; then database_ok=true; else database_ok=false; fi`,
+		`printf '%s\\n%s\\n%s\\n%s\\n%s\\n' "$core_version" "$site_url" "$home_url" "$active_plugins" "$database_ok"`,
+	].join( ' && ' );
+	const [ coreVersion = '', siteUrl = '', homeUrl = '', pluginCount = '0', databaseOk = 'false' ] =
+		( await runConnectedSshCommand( client, command ) ).trim().split( '\n' );
+	const normalizedConnectionUrl = connection.siteUrl.replace( /\/+$/, '' );
+	const normalizedSiteUrl = siteUrl.replace( /\/+$/, '' );
+	const normalizedHomeUrl = homeUrl.replace( /\/+$/, '' );
+	const urlMatchesConnection =
+		normalizedSiteUrl === normalizedConnectionUrl && normalizedHomeUrl === normalizedConnectionUrl;
+	const activePluginCount = Number.parseInt( pluginCount, 10 );
+
+	return {
+		ok: databaseOk === 'true' && Boolean( coreVersion ) && urlMatchesConnection,
+		coreVersion,
+		databaseOk: databaseOk === 'true',
+		siteUrl,
+		homeUrl,
+		activePluginCount: Number.isFinite( activePluginCount ) ? activePluginCount : 0,
+		urlMatchesConnection,
+	};
 }
 
 async function readSftpFile( sftp: SFTPWrapper, remotePath: string ): Promise< Buffer > {
@@ -1067,7 +1132,8 @@ async function readSftpFile( sftp: SFTPWrapper, remotePath: string ): Promise< B
 async function createSelfHostedSshPullArchive(
 	connection: SelfHostedSshConnectionWithAuth,
 	localSiteId: string,
-	options: SelfHostedSshPullOptions
+	options: SelfHostedSshPullOptions,
+	onDownloadProgress?: ( progress: number ) => void
 ): Promise< { archivePath: string; remoteArchivePath: string } > {
 	const client = await connectSshClient( connection );
 	const remoteWorkDir = getRemoteStudioSyncWorkDir( connection );
@@ -1087,7 +1153,7 @@ async function createSelfHostedSshPullArchive(
 			throw new Error( 'Remote archive path was not returned.' );
 		}
 		const sftp = await getSftpClient( client );
-		await downloadSftpFile( sftp, remoteArchivePath, archivePath );
+		await downloadSftpFile( sftp, remoteArchivePath, archivePath, onDownloadProgress );
 		sftp.end();
 		return { archivePath, remoteArchivePath };
 	} finally {
@@ -1515,42 +1581,93 @@ export async function restoreSelfHostedSshBackup(
 	localSiteId: string,
 	connectionId: string,
 	backupId: string
-): Promise< { safetyBackupPath: string } > {
-	if ( ! /^studio-(?:backup|pre-restore)-\d+\.tar\.gz$/.test( backupId ) ) {
-		throw new Error( 'Invalid SSH backup identifier.' );
-	}
-	const connections = await getSyncConnectionsForLocalSite( localSiteId );
-	const connection = connections.find( ( item ) => item.id === connectionId );
-	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
-	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
-	if ( parsed.environmentType === 'production' ) {
-		throw new Error( 'SSH backup restore is disabled for production connections.' );
-	}
-	const client = await connectSshClient( parsed );
-	const backupDirectory = getSelfHostedSshBackupDirectory( parsed );
-	const remoteWorkDir = getRemoteStudioSyncWorkDir( parsed );
-
+): Promise< {
+	safetyBackupPath: string;
+	verification: SelfHostedSshVerification;
+} > {
+	const operation = 'restore' as const;
+	sendSelfHostedSshProgress( {
+		localSiteId,
+		connectionId,
+		operation,
+		phase: 'preparing',
+		progress: 5,
+		message: 'Preparing backup restore…',
+	} );
 	try {
-		const sftp = await getSftpClient( client );
-		const backup = await readSelfHostedSshBackupManifest(
-			sftp,
-			backupDirectory,
-			`${ backupId }.json`
-		);
-		sftp.end();
-		const { command, safetyBackupPath } = getSshBackupRestoreCommand(
-			parsed,
-			backup,
-			remoteWorkDir
-		);
-		await runConnectedSshCommand( client, command );
-		return { safetyBackupPath };
-	} finally {
-		await runConnectedSshCommand(
-			client,
-			`rm -rf ${ quoteRemoteShellArg( remoteWorkDir ) }`
-		).catch( () => undefined );
-		client.end();
+		if ( ! /^studio-(?:backup|pre-restore)-\d+\.tar\.gz$/.test( backupId ) ) {
+			throw new Error( 'Invalid SSH backup identifier.' );
+		}
+		const connections = await getSyncConnectionsForLocalSite( localSiteId );
+		const connection = connections.find( ( item ) => item.id === connectionId );
+		const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+		const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+		if ( parsed.environmentType === 'production' ) {
+			throw new Error( 'SSH backup restore is disabled for production connections.' );
+		}
+		const client = await connectSshClient( parsed );
+		const backupDirectory = getSelfHostedSshBackupDirectory( parsed );
+		const remoteWorkDir = getRemoteStudioSyncWorkDir( parsed );
+
+		try {
+			const sftp = await getSftpClient( client );
+			const backup = await readSelfHostedSshBackupManifest(
+				sftp,
+				backupDirectory,
+				`${ backupId }.json`
+			);
+			sftp.end();
+			sendSelfHostedSshProgress( {
+				localSiteId,
+				connectionId,
+				operation,
+				phase: 'backing-up',
+				progress: 25,
+				message: 'Creating pre-restore safety backup…',
+			} );
+			const { command, safetyBackupPath } = getSshBackupRestoreCommand(
+				parsed,
+				backup,
+				remoteWorkDir
+			);
+			await runConnectedSshCommand( client, command );
+			sendSelfHostedSshProgress( {
+				localSiteId,
+				connectionId,
+				operation,
+				phase: 'verifying',
+				progress: 90,
+				message: 'Verifying restored WordPress site…',
+			} );
+			const verification = await verifySelfHostedSshSite( client, parsed );
+			sendSelfHostedSshProgress( {
+				localSiteId,
+				connectionId,
+				operation,
+				phase: 'finished',
+				progress: 100,
+				message: verification.ok
+					? 'Backup restore verified.'
+					: 'Backup restored with verification warnings.',
+			} );
+			return { safetyBackupPath, verification };
+		} finally {
+			await runConnectedSshCommand(
+				client,
+				`rm -rf ${ quoteRemoteShellArg( remoteWorkDir ) }`
+			).catch( () => undefined );
+			client.end();
+		}
+	} catch ( error ) {
+		sendSelfHostedSshProgress( {
+			localSiteId,
+			connectionId,
+			operation,
+			phase: 'failed',
+			progress: 100,
+			message: error instanceof Error ? error.message : 'Backup restore failed.',
+		} );
+		throw error;
 	}
 }
 
@@ -2069,41 +2186,87 @@ export async function pullSelfHostedSshSite(
 	connectionId: string,
 	options: SelfHostedSshPullOptions
 ): Promise< { archivePath: string; remoteArchivePath: string } > {
-	const connections = await getSyncConnectionsForLocalSite( localSiteId );
-	const connection = connections.find( ( item ) => item.id === connectionId );
-	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
-	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
-	const parsedOptions = selfHostedSshPullOptionsSchema.parse( options );
-	const isFullPull = parsedOptions.optionsToSync.includes( 'all' );
-	const includesDatabase = parsedOptions.optionsToSync.includes( 'sqls' );
-	const includesPaths = parsedOptions.optionsToSync.includes( 'paths' );
-	const hasSelectedPaths = Boolean( parsedOptions.specificSelectionPaths?.length );
-	if (
-		parsedOptions.optionsToSync.length === 0 ||
-		( isFullPull && parsedOptions.optionsToSync.length !== 1 ) ||
-		( ! isFullPull && ! includesDatabase && ! ( includesPaths && hasSelectedPaths ) ) ||
-		( hasSelectedPaths && ! includesPaths )
-	) {
-		throw new Error( 'Select at least one database or wp-content item to pull.' );
-	}
-	const { archivePath, remoteArchivePath } = await createSelfHostedSshPullArchive(
-		parsed,
+	const operation = 'pull' as const;
+	sendSelfHostedSshProgress( {
 		localSiteId,
-		parsedOptions
-	);
-
-	await importSite( event, localSiteId, archivePath, {
-		alwaysStartServer: true,
-		removeBackupOnComplete: true,
-		showErrorModal: true,
-		showNotification: true,
+		connectionId,
+		operation,
+		phase: 'preparing',
+		progress: 5,
+		message: 'Preparing remote archive…',
 	} );
-	await addOrUpdateSyncConnection( localSiteId, {
-		...stripSyncConnectionAuth( parsed ),
-		lastPullTimestamp: new Date().toISOString(),
-	} );
+	try {
+		const connections = await getSyncConnectionsForLocalSite( localSiteId );
+		const connection = connections.find( ( item ) => item.id === connectionId );
+		const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+		const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+		const parsedOptions = selfHostedSshPullOptionsSchema.parse( options );
+		const isFullPull = parsedOptions.optionsToSync.includes( 'all' );
+		const includesDatabase = parsedOptions.optionsToSync.includes( 'sqls' );
+		const includesPaths = parsedOptions.optionsToSync.includes( 'paths' );
+		const hasSelectedPaths = Boolean( parsedOptions.specificSelectionPaths?.length );
+		if (
+			parsedOptions.optionsToSync.length === 0 ||
+			( isFullPull && parsedOptions.optionsToSync.length !== 1 ) ||
+			( ! isFullPull && ! includesDatabase && ! ( includesPaths && hasSelectedPaths ) ) ||
+			( hasSelectedPaths && ! includesPaths )
+		) {
+			throw new Error( 'Select at least one database or wp-content item to pull.' );
+		}
+		const { archivePath, remoteArchivePath } = await createSelfHostedSshPullArchive(
+			parsed,
+			localSiteId,
+			parsedOptions,
+			( transferProgress ) =>
+				sendSelfHostedSshProgress( {
+					localSiteId,
+					connectionId,
+					operation,
+					phase: 'downloading',
+					progress: 30 + transferProgress * 0.35,
+					message: `Downloading remote archive (${ Math.round( transferProgress ) }%)…`,
+				} )
+		);
 
-	return { archivePath, remoteArchivePath };
+		sendSelfHostedSshProgress( {
+			localSiteId,
+			connectionId,
+			operation,
+			phase: 'importing',
+			progress: 70,
+			message: 'Importing selected data…',
+		} );
+		await importSite( event, localSiteId, archivePath, {
+			alwaysStartServer: true,
+			removeBackupOnComplete: true,
+			showErrorModal: true,
+			showNotification: true,
+		} );
+		await addOrUpdateSyncConnection( localSiteId, {
+			...stripSyncConnectionAuth( parsed ),
+			lastPullTimestamp: new Date().toISOString(),
+		} );
+		sendSelfHostedSshProgress( {
+			localSiteId,
+			connectionId,
+			operation,
+			phase: 'finished',
+			progress: 100,
+			message: 'Pull completed.',
+		} );
+
+		return { archivePath, remoteArchivePath };
+	} catch ( error ) {
+		sendSelfHostedSshProgress( {
+			localSiteId,
+			connectionId,
+			operation,
+			phase: 'failed',
+			progress: 100,
+			message: error instanceof Error ? error.message : 'Pull failed.',
+		} );
+		throw error;
+	}
 }
 
 export async function pushSelfHostedSshSite(
@@ -2111,58 +2274,121 @@ export async function pushSelfHostedSshSite(
 	localSiteId: string,
 	connectionId: string,
 	options: SelfHostedSshPushOptions
-): Promise< { backupPath: string } > {
-	const connections = await getSyncConnectionsForLocalSite( localSiteId );
-	const connection = connections.find( ( item ) => item.id === connectionId );
-	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
-	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
-	const parsedOptions = selfHostedSshPushOptionsSchema.parse( options );
-
-	if ( parsed.environmentType === 'production' ) {
-		throw new Error(
-			'SSH push to production is disabled. Use a staging or development connection.'
-		);
-	}
-
-	getSelfHostedSshPushSelection( parsedOptions );
-	const { archivePath, localSiteUrl } = await createSelfHostedSshPushArchive(
-		event,
+): Promise< { backupPath: string; verification: SelfHostedSshVerification } > {
+	const operation = 'push' as const;
+	sendSelfHostedSshProgress( {
 		localSiteId,
-		parsedOptions
-	);
-	const remoteWorkDir = getRemoteStudioSyncWorkDir( parsed );
-	const { command, remoteArchivePath } = getSshPushRestoreCommand(
-		parsed,
-		remoteWorkDir,
-		parsedOptions,
-		localSiteUrl
-	);
-	let client: Client | undefined;
-
+		connectionId,
+		operation,
+		phase: 'exporting',
+		progress: 5,
+		message: 'Exporting local selection…',
+	} );
 	try {
-		client = await connectSshClient( parsed );
-		await runConnectedSshCommand( client, `mkdir -p ${ quoteRemoteShellArg( remoteWorkDir ) }` );
-		const sftp = await getSftpClient( client );
-		await uploadSftpFile( sftp, archivePath, remoteArchivePath );
-		sftp.end();
-		const backupPath = ( await runConnectedSshCommand( client, command ) ).trim();
-		if ( ! backupPath ) {
-			throw new Error( 'Remote backup path was not returned.' );
+		const connections = await getSyncConnectionsForLocalSite( localSiteId );
+		const connection = connections.find( ( item ) => item.id === connectionId );
+		const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+		const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+		const parsedOptions = selfHostedSshPushOptionsSchema.parse( options );
+
+		if ( parsed.environmentType === 'production' ) {
+			throw new Error(
+				'SSH push to production is disabled. Use a staging or development connection.'
+			);
 		}
-		await addOrUpdateSyncConnection( localSiteId, {
-			...stripSyncConnectionAuth( parsed ),
-			lastPushTimestamp: new Date().toISOString(),
+
+		getSelfHostedSshPushSelection( parsedOptions );
+		const { archivePath, localSiteUrl } = await createSelfHostedSshPushArchive(
+			event,
+			localSiteId,
+			parsedOptions
+		);
+		const remoteWorkDir = getRemoteStudioSyncWorkDir( parsed );
+		const { command, remoteArchivePath } = getSshPushRestoreCommand(
+			parsed,
+			remoteWorkDir,
+			parsedOptions,
+			localSiteUrl
+		);
+		let client: Client | undefined;
+
+		try {
+			client = await connectSshClient( parsed );
+			sendSelfHostedSshProgress( {
+				localSiteId,
+				connectionId,
+				operation,
+				phase: 'uploading',
+				progress: 20,
+				message: 'Uploading archive…',
+			} );
+			await runConnectedSshCommand( client, `mkdir -p ${ quoteRemoteShellArg( remoteWorkDir ) }` );
+			const sftp = await getSftpClient( client );
+			await uploadSftpFile( sftp, archivePath, remoteArchivePath, ( transferProgress ) =>
+				sendSelfHostedSshProgress( {
+					localSiteId,
+					connectionId,
+					operation,
+					phase: 'uploading',
+					progress: 20 + transferProgress * 0.35,
+					message: `Uploading archive (${ Math.round( transferProgress ) }%)…`,
+				} )
+			);
+			sftp.end();
+			sendSelfHostedSshProgress( {
+				localSiteId,
+				connectionId,
+				operation,
+				phase: 'backing-up',
+				progress: 60,
+				message: 'Backing up and applying remote changes…',
+			} );
+			const backupPath = ( await runConnectedSshCommand( client, command ) ).trim();
+			if ( ! backupPath ) {
+				throw new Error( 'Remote backup path was not returned.' );
+			}
+			sendSelfHostedSshProgress( {
+				localSiteId,
+				connectionId,
+				operation,
+				phase: 'verifying',
+				progress: 90,
+				message: 'Verifying remote WordPress site…',
+			} );
+			const verification = await verifySelfHostedSshSite( client, parsed );
+			await addOrUpdateSyncConnection( localSiteId, {
+				...stripSyncConnectionAuth( parsed ),
+				lastPushTimestamp: new Date().toISOString(),
+			} );
+			sendSelfHostedSshProgress( {
+				localSiteId,
+				connectionId,
+				operation,
+				phase: 'finished',
+				progress: 100,
+				message: verification.ok ? 'Push verified.' : 'Push completed with verification warnings.',
+			} );
+			return { backupPath, verification };
+		} finally {
+			if ( client ) {
+				await runConnectedSshCommand(
+					client,
+					`rm -rf ${ quoteRemoteShellArg( remoteWorkDir ) }`
+				).catch( () => undefined );
+				client.end();
+			}
+			await fsPromises.rm( path.dirname( archivePath ), { recursive: true, force: true } );
+		}
+	} catch ( error ) {
+		sendSelfHostedSshProgress( {
+			localSiteId,
+			connectionId,
+			operation,
+			phase: 'failed',
+			progress: 100,
+			message: error instanceof Error ? error.message : 'Push failed.',
 		} );
-		return { backupPath };
-	} finally {
-		if ( client ) {
-			await runConnectedSshCommand(
-				client,
-				`rm -rf ${ quoteRemoteShellArg( remoteWorkDir ) }`
-			).catch( () => undefined );
-			client.end();
-		}
-		await fsPromises.rm( path.dirname( archivePath ), { recursive: true, force: true } );
+		throw error;
 	}
 }
 

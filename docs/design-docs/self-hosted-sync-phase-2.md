@@ -230,4 +230,26 @@ Included:
 Still pending:
 
 - [ ] Automatic age- or size-based backup retention.
-- [ ] Transfer and remote command progress reporting.
+- [x] Transfer and remote command progress reporting.
+
+## SSH Progress And Verification Addendum
+
+SSH pull, push, and backup restore now report operation progress in the self-hosted connection card.
+
+Included:
+
+- [x] Provider-specific progress events keyed by local site and connection.
+- [x] Pull phases for remote preparation, download, local import, completion, and failure.
+- [x] Push phases for local export, upload percentage, remote backup/apply, verification, and failure.
+- [x] Restore phases for preparation, safety backup, restore, verification, and failure.
+- [x] Post-push and post-restore WordPress core version check.
+- [x] Database integrity check through WP-CLI.
+- [x] `siteurl` and `home` comparison with the configured connection URL.
+- [x] Active plugin count reporting.
+- [x] Explicit verification warnings instead of reporting unverified operations as fully successful.
+
+Still pending:
+
+- [ ] Automatic rollback when post-operation verification fails.
+- [ ] Detailed plugin/theme update and vulnerability management.
+- [ ] Remote uptime, cron, debug-log, and cache status dashboard.

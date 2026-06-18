@@ -1,6 +1,7 @@
 import {
 	selfHostedSshBackupSchema,
 	selfHostedSshPushPreflightSchema,
+	selfHostedSshVerificationSchema,
 } from '@studio/common/types/sync';
 import { describe, expect, it } from 'vitest';
 import { TreeNode } from 'src/components/tree-view';
@@ -199,6 +200,26 @@ describe( 'selfHostedSshPushPreflightSchema', () => {
 		).toMatchObject( {
 			hasEnoughDiskSpace: true,
 			includeDatabase: true,
+		} );
+	} );
+} );
+
+describe( 'selfHostedSshVerificationSchema', () => {
+	it( 'accepts a healthy remote WordPress verification report', () => {
+		expect(
+			selfHostedSshVerificationSchema.parse( {
+				ok: true,
+				coreVersion: '6.8.1',
+				databaseOk: true,
+				siteUrl: 'https://staging.example.com',
+				homeUrl: 'https://staging.example.com',
+				activePluginCount: 8,
+				urlMatchesConnection: true,
+			} )
+		).toMatchObject( {
+			ok: true,
+			databaseOk: true,
+			activePluginCount: 8,
 		} );
 	} );
 } );

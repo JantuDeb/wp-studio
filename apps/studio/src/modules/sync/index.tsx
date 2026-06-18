@@ -9,6 +9,7 @@ import Button from 'src/components/button';
 import { IllustrationGrid } from 'src/components/illustration-grid';
 import Modal from 'src/components/modal';
 import offlineIcon from 'src/components/offline-icon';
+import ProgressBar from 'src/components/progress-bar';
 import { Tooltip } from 'src/components/tooltip';
 import { useAuth } from 'src/hooks/use-auth';
 import { useOffline } from 'src/hooks/use-offline';
@@ -38,6 +39,7 @@ import type {
 	SelfHostedSshPullOptions,
 	SelfHostedSshPushOptions,
 	SelfHostedSshBackup,
+	SelfHostedSshProgress,
 	SyncConnection,
 	SyncSite,
 } from '@studio/common/types/sync';
@@ -182,6 +184,7 @@ function SelfHostedConnectionsList( {
 	pushingConnectionId,
 	preflightingConnectionId,
 	pullingConnectionId,
+	sshProgress,
 }: {
 	connections: SyncConnection[];
 	onDisconnect: ( connectionId: string ) => void;
@@ -193,6 +196,7 @@ function SelfHostedConnectionsList( {
 	pushingConnectionId: string | null;
 	preflightingConnectionId: string | null;
 	pullingConnectionId: string | null;
+	sshProgress: Record< string, SelfHostedSshProgress >;
 } ) {
 	const { __ } = useI18n();
 	const selfHostedConnections = connections.filter(
@@ -279,6 +283,16 @@ function SelfHostedConnectionsList( {
 								{ __( 'Backups' ) }
 							</Button>
 						</div>
+						{ connection.provider === 'self-hosted-ssh' &&
+							sshProgress[ connection.id ] &&
+							sshProgress[ connection.id ].phase !== 'finished' && (
+								<div className="mt-4">
+									<div className="text-xs text-frame-text-secondary mb-2">
+										{ sshProgress[ connection.id ].message }
+									</div>
+									<ProgressBar value={ sshProgress[ connection.id ].progress } maxValue={ 100 } />
+								</div>
+							) }
 					</div>
 				) ) }
 			</div>
@@ -646,6 +660,7 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 	const [ preflightingConnectionId, setPreflightingConnectionId ] = useState< string | null >(
 		null
 	);
+	const [ sshProgress, setSshProgress ] = useState< Record< string, SelfHostedSshProgress > >( {} );
 
 	const connectedSiteIds = connectedSites.map( ( { id } ) => id );
 	// Subscribe to /me/sites so reconcileConnectedSites runs on page load to
@@ -671,6 +686,18 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 		return () => {
 			isMounted = false;
 		};
+	}, [ selectedSite.id ] );
+
+	useEffect( () => {
+		return window.ipcListener.subscribe( 'self-hosted-ssh-progress', ( _event, progress ) => {
+			if ( progress.localSiteId !== selectedSite.id ) {
+				return;
+			}
+			setSshProgress( ( current ) => ( {
+				...current,
+				[ progress.connectionId ]: progress,
+			} ) );
+		} );
 	}, [ selectedSite.id ] );
 
 	// Derived inline from Redux + connectedSites (storage) rather than stored in local state.
@@ -883,15 +910,35 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 
 		setPushingConnectionId( connection.id );
 		try {
-			const { backupPath } = await getIpcApi().pushSelfHostedSshSite(
+			const { backupPath, verification } = await getIpcApi().pushSelfHostedSshSite(
 				selectedSite.id,
 				connection.id,
 				options
 			);
-			getIpcApi().showNotification( {
-				title: __( 'Site pushed' ),
-				body: sprintf( __( 'Remote backup retained at %s.' ), backupPath ),
-			} );
+			if ( verification.ok ) {
+				getIpcApi().showNotification( {
+					title: __( 'Site pushed and verified' ),
+					body: sprintf(
+						__( 'WordPress %1$s is healthy with %2$d active plugins. Backup: %3$s.' ),
+						verification.coreVersion,
+						verification.activePluginCount,
+						backupPath
+					),
+				} );
+			} else {
+				getIpcApi().showErrorMessageBox( {
+					title: __( 'Push completed with verification warnings' ),
+					message: sprintf(
+						__(
+							'Database check: %1$s. URL check: %2$s. Remote site URL: %3$s. Backup retained at %4$s.'
+						),
+						verification.databaseOk ? __( 'passed' ) : __( 'failed' ),
+						verification.urlMatchesConnection ? __( 'passed' ) : __( 'failed' ),
+						verification.siteUrl,
+						backupPath
+					),
+				} );
+			}
 			setSshSyncConnection( null );
 		} catch ( error ) {
 			getIpcApi().showErrorMessageBox( {
@@ -1002,15 +1049,31 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 
 		setRestoringBackupId( backup.id );
 		try {
-			const { safetyBackupPath } = await getIpcApi().restoreSelfHostedSshBackup(
+			const { safetyBackupPath, verification } = await getIpcApi().restoreSelfHostedSshBackup(
 				selectedSite.id,
 				connection.id,
 				backup.id
 			);
-			getIpcApi().showNotification( {
-				title: __( 'Backup restored' ),
-				body: sprintf( __( 'Pre-restore safety backup retained at %s.' ), safetyBackupPath ),
-			} );
+			if ( verification.ok ) {
+				getIpcApi().showNotification( {
+					title: __( 'Backup restored and verified' ),
+					body: sprintf(
+						__( 'WordPress %1$s is healthy. Safety backup: %2$s.' ),
+						verification.coreVersion,
+						safetyBackupPath
+					),
+				} );
+			} else {
+				getIpcApi().showErrorMessageBox( {
+					title: __( 'Backup restored with verification warnings' ),
+					message: sprintf(
+						__( 'Database check: %1$s. URL check: %2$s. Safety backup retained at %3$s.' ),
+						verification.databaseOk ? __( 'passed' ) : __( 'failed' ),
+						verification.urlMatchesConnection ? __( 'passed' ) : __( 'failed' ),
+						safetyBackupPath
+					),
+				} );
+			}
 			setSshBackups( await getIpcApi().listSelfHostedSshBackups( selectedSite.id, connection.id ) );
 		} catch ( error ) {
 			getIpcApi().showErrorMessageBox( {
@@ -1074,6 +1137,7 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 							pushingConnectionId={ pushingConnectionId }
 							preflightingConnectionId={ preflightingConnectionId }
 							pullingConnectionId={ pullingConnectionId }
+							sshProgress={ sshProgress }
 						/>
 					</div>
 					<div className="sticky bottom-0 bg-frame/[0.8] backdrop-blur-sm w-full px-8 py-6 mt-auto">

@@ -301,3 +301,33 @@ export const selfHostedSshPushPreflightSchema = z.object( {
 	selectedPaths: z.array( z.string() ),
 } );
 export type SelfHostedSshPushPreflight = z.infer< typeof selfHostedSshPushPreflightSchema >;
+
+export const selfHostedSshVerificationSchema = z.object( {
+	ok: z.boolean(),
+	coreVersion: z.string(),
+	databaseOk: z.boolean(),
+	siteUrl: z.string(),
+	homeUrl: z.string(),
+	activePluginCount: z.number().int().nonnegative(),
+	urlMatchesConnection: z.boolean(),
+} );
+export type SelfHostedSshVerification = z.infer< typeof selfHostedSshVerificationSchema >;
+
+export type SelfHostedSshProgress = {
+	localSiteId: string;
+	connectionId: string;
+	operation: 'pull' | 'push' | 'restore';
+	phase:
+		| 'preparing'
+		| 'exporting'
+		| 'uploading'
+		| 'downloading'
+		| 'backing-up'
+		| 'applying'
+		| 'importing'
+		| 'verifying'
+		| 'finished'
+		| 'failed';
+	progress: number;
+	message: string;
+};
