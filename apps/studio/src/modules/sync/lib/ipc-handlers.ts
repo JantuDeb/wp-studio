@@ -23,10 +23,12 @@ import wpcomXhrRequest from '@studio/common/lib/wpcom-xhr-request-factory';
 import {
 	selfHostedRestConnectionWithAuthSchema,
 	selfHostedSshPullOptionsSchema,
+	selfHostedSshPushOptionsSchema,
 	selfHostedSshConnectionWithAuthSchema,
 	SyncConnection,
 	SyncSite,
 	type SelfHostedSshPullOptions,
+	type SelfHostedSshPushOptions,
 	type SelfHostedRestConnectionWithAuth,
 	type SelfHostedSshConnectionWithAuth,
 } from '@studio/common/types/sync';
@@ -40,6 +42,7 @@ import {
 import { sendIpcEventToRenderer } from 'src/ipc-utils';
 import { ACTIVE_SYNC_OPERATIONS } from 'src/lib/active-sync-operations';
 import { download } from 'src/lib/download';
+import { getSiteUrl } from 'src/lib/get-site-url';
 import { getSyncBackupTempPath } from 'src/lib/get-sync-backup-temp-path';
 import { getAuthenticationToken } from 'src/lib/oauth';
 import { fetchSiteRest } from 'src/lib/wordpress-rest-api';
@@ -1030,6 +1033,22 @@ async function downloadSftpFile(
 	} );
 }
 
+async function uploadSftpFile(
+	sftp: SFTPWrapper,
+	localPath: string,
+	remotePath: string
+): Promise< void > {
+	return new Promise( ( resolve, reject ) => {
+		sftp.fastPut( localPath, remotePath, ( error ) => {
+			if ( error ) {
+				reject( error );
+				return;
+			}
+			resolve();
+		} );
+	} );
+}
+
 async function createSelfHostedSshPullArchive(
 	connection: SelfHostedSshConnectionWithAuth,
 	localSiteId: string,
@@ -1063,6 +1082,165 @@ async function createSelfHostedSshPullArchive(
 		).catch( () => undefined );
 		client.end();
 	}
+}
+
+function getSelfHostedSshPushSelection( options: SelfHostedSshPushOptions ): {
+	includeDatabase: boolean;
+	includeWpContent: boolean;
+	selectedPaths: string[];
+} {
+	const isFullPush = options.optionsToSync.includes( 'all' );
+	const includeDatabase = isFullPush || options.optionsToSync.includes( 'sqls' );
+	const includeWpContent =
+		isFullPush ||
+		options.optionsToSync.some( ( option ) =>
+			[ 'paths', 'uploads', 'plugins', 'themes', 'contents' ].includes( option )
+		);
+	const selectedPaths = isFullPush
+		? [ '' ]
+		: ( options.specificSelectionPaths ?? [] ).map( normalizeSelfHostedWpContentPath );
+
+	if (
+		( isFullPush && options.optionsToSync.length !== 1 ) ||
+		( ! includeDatabase && ! includeWpContent ) ||
+		( includeWpContent && selectedPaths.length === 0 )
+	) {
+		throw new Error( 'Select at least one database or wp-content item to push.' );
+	}
+
+	return { includeDatabase, includeWpContent, selectedPaths };
+}
+
+async function createSelfHostedSshPushArchive(
+	event: IpcMainInvokeEvent,
+	localSiteId: string,
+	options: SelfHostedSshPushOptions
+): Promise< { archivePath: string; localSiteUrl: string } > {
+	const site = SiteServer.get( localSiteId );
+	if ( ! site ) {
+		throw new Error( 'Site not found.' );
+	}
+	const { includeDatabase, includeWpContent, selectedPaths } =
+		getSelfHostedSshPushSelection( options );
+	const tempDir = path.join(
+		app.getPath( 'temp' ),
+		'com.wordpress.studio',
+		'self-hosted-pushes',
+		randomUUID()
+	);
+	await fsPromises.mkdir( tempDir, { recursive: true } );
+	const archivePath = path.join( tempDir, `self-hosted-${ localSiteId }.tar.gz` );
+	const mode = includeDatabase && includeWpContent ? 'full' : includeWpContent ? 'content' : 'db';
+
+	await exportSite( event, localSiteId, archivePath, {
+		mode,
+		showErrorModal: true,
+		showNotification: false,
+		splitDatabaseDumpByTable: false,
+		specificSelectionPaths: includeWpContent ? selectedPaths : undefined,
+		applyDeployIgnore: true,
+	} );
+
+	return { archivePath, localSiteUrl: getSiteUrl( site.details ) };
+}
+
+function getSshPushRestoreCommand(
+	connection: SelfHostedSshConnectionWithAuth,
+	remoteWorkDir: string,
+	options: SelfHostedSshPushOptions,
+	localSiteUrl: string
+): { command: string; remoteArchivePath: string; backupPath: string } {
+	const { includeDatabase, includeWpContent, selectedPaths } =
+		getSelfHostedSshPushSelection( options );
+	const wpCliPath = quoteRemoteShellArg( connection.auth.wpCliPath?.trim() || 'wp' );
+	const remoteWordPressPath = connection.auth.remoteWordPressPath.replace( /\/+$/, '' );
+	const remotePath = quoteRemoteShellArg( remoteWordPressPath );
+	const workDir = quoteRemoteShellArg( remoteWorkDir );
+	const remoteArchivePath = `${ remoteWorkDir }/studio-push.tar.gz`;
+	const backupDirectory = `${ remoteWordPressPath }/.studio-backups`;
+	const backupPath = `${ backupDirectory }/studio-backup-${ Date.now() }.tar.gz`;
+	const commands = [
+		'set -e',
+		`test -d ${ remotePath }`,
+		`mkdir -p ${ workDir }/extract ${ workDir }/backup/sql ${ workDir }/backup/wp-content ${ quoteRemoteShellArg(
+			backupDirectory
+		) }`,
+		`tar -xzf ${ quoteRemoteShellArg( remoteArchivePath ) } -C ${ workDir }/extract`,
+	];
+
+	if ( includeDatabase ) {
+		commands.push(
+			`${ wpCliPath } db export ${ workDir }/backup/sql/database.sql --path=${ remotePath } --add-drop-table`
+		);
+	}
+
+	if ( includeWpContent ) {
+		for ( const selectedPath of selectedPaths ) {
+			if ( selectedPath === '' ) {
+				commands.push( `cp -a ${ remotePath }/wp-content/. ${ workDir }/backup/wp-content/` );
+				continue;
+			}
+			const source = quoteRemoteShellArg(
+				path.posix.join( remoteWordPressPath, 'wp-content', selectedPath )
+			);
+			const destination = quoteRemoteShellArg(
+				path.posix.join( remoteWorkDir, 'backup', 'wp-content', selectedPath )
+			);
+			const destinationParent = quoteRemoteShellArg(
+				path.posix.dirname( path.posix.join( remoteWorkDir, 'backup', 'wp-content', selectedPath ) )
+			);
+			commands.push(
+				`if test -e ${ source }; then mkdir -p ${ destinationParent } && cp -a ${ source } ${ destination }; fi`
+			);
+		}
+	}
+
+	commands.push( `tar -czf ${ quoteRemoteShellArg( backupPath ) } -C ${ workDir }/backup .` );
+
+	if ( includeWpContent ) {
+		commands.push( `mkdir -p ${ remotePath }/wp-content` );
+		for ( const selectedPath of selectedPaths ) {
+			if ( selectedPath === '' ) {
+				commands.push(
+					`find ${ remotePath }/wp-content -mindepth 1 -maxdepth 1 -exec rm -rf {} +`,
+					`cp -a ${ workDir }/extract/wp-content/. ${ remotePath }/wp-content/`
+				);
+				continue;
+			}
+			const source = quoteRemoteShellArg(
+				path.posix.join( remoteWorkDir, 'extract', 'wp-content', selectedPath )
+			);
+			const destination = quoteRemoteShellArg(
+				path.posix.join( remoteWordPressPath, 'wp-content', selectedPath )
+			);
+			const destinationParent = quoteRemoteShellArg(
+				path.posix.dirname( path.posix.join( remoteWordPressPath, 'wp-content', selectedPath ) )
+			);
+			commands.push(
+				`mkdir -p ${ destinationParent }`,
+				`rm -rf ${ destination }`,
+				`cp -a ${ source } ${ destination }`
+			);
+		}
+	}
+
+	if ( includeDatabase ) {
+		commands.push(
+			`sql_file=$(find ${ workDir }/extract/sql -type f -name '*.sql' | head -n 1)`,
+			`test -n "$sql_file"`,
+			`${ wpCliPath } db reset --yes --path=${ remotePath }`,
+			`${ wpCliPath } db import "$sql_file" --path=${ remotePath }`,
+			`${ wpCliPath } search-replace ${ quoteRemoteShellArg(
+				localSiteUrl
+			) } ${ quoteRemoteShellArg(
+				connection.siteUrl.replace( /\/+$/, '' )
+			) } --path=${ remotePath } --all-tables-with-prefix --skip-columns=guid`,
+			`(${ wpCliPath } cache flush --path=${ remotePath } || true)`
+		);
+	}
+
+	commands.push( `printf '%s\\n' ${ quoteRemoteShellArg( backupPath ) }` );
+	return { command: commands.join( ' && ' ), remoteArchivePath, backupPath };
 }
 
 function getRestAuthHeader( username: string, applicationPassword: string ): string {
@@ -1609,6 +1787,70 @@ export async function pullSelfHostedSshSite(
 		showErrorModal: true,
 		showNotification: true,
 	} );
+	await addOrUpdateSyncConnection( localSiteId, {
+		...stripSyncConnectionAuth( parsed ),
+		lastPullTimestamp: new Date().toISOString(),
+	} );
 
 	return { archivePath, remoteArchivePath };
+}
+
+export async function pushSelfHostedSshSite(
+	event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string,
+	options: SelfHostedSshPushOptions
+): Promise< { backupPath: string } > {
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+	const parsedOptions = selfHostedSshPushOptionsSchema.parse( options );
+
+	if ( parsed.environmentType === 'production' ) {
+		throw new Error(
+			'SSH push to production is disabled. Use a staging or development connection.'
+		);
+	}
+
+	getSelfHostedSshPushSelection( parsedOptions );
+	const { archivePath, localSiteUrl } = await createSelfHostedSshPushArchive(
+		event,
+		localSiteId,
+		parsedOptions
+	);
+	const remoteWorkDir = getRemoteStudioSyncWorkDir( parsed );
+	const { command, remoteArchivePath } = getSshPushRestoreCommand(
+		parsed,
+		remoteWorkDir,
+		parsedOptions,
+		localSiteUrl
+	);
+	let client: Client | undefined;
+
+	try {
+		client = await connectSshClient( parsed );
+		await runConnectedSshCommand( client, `mkdir -p ${ quoteRemoteShellArg( remoteWorkDir ) }` );
+		const sftp = await getSftpClient( client );
+		await uploadSftpFile( sftp, archivePath, remoteArchivePath );
+		sftp.end();
+		const backupPath = ( await runConnectedSshCommand( client, command ) ).trim();
+		if ( ! backupPath ) {
+			throw new Error( 'Remote backup path was not returned.' );
+		}
+		await addOrUpdateSyncConnection( localSiteId, {
+			...stripSyncConnectionAuth( parsed ),
+			lastPushTimestamp: new Date().toISOString(),
+		} );
+		return { backupPath };
+	} finally {
+		if ( client ) {
+			await runConnectedSshCommand(
+				client,
+				`rm -rf ${ quoteRemoteShellArg( remoteWorkDir ) }`
+			).catch( () => undefined );
+			client.end();
+		}
+		await fsPromises.rm( path.dirname( archivePath ), { recursive: true, force: true } );
+	}
 }

@@ -206,6 +206,7 @@ export {
 	pullSelfHostedSshSite,
 	pullSiteFromLive,
 	pushSelfHostedRestContent,
+	pushSelfHostedSshSite,
 	pushArchive,
 	removeSyncBackup,
 	resumeSyncUpload,

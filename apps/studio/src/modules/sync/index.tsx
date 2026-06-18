@@ -33,7 +33,12 @@ import {
 	useGetConnectedSitesForLocalSiteQuery,
 } from 'src/stores/sync/connected-sites';
 import { useGetWpComSitesQuery } from 'src/stores/sync/wpcom-sites';
-import type { SelfHostedSshPullOptions, SyncConnection, SyncSite } from '@studio/common/types/sync';
+import type {
+	SelfHostedSshPullOptions,
+	SelfHostedSshPushOptions,
+	SyncConnection,
+	SyncSite,
+} from '@studio/common/types/sync';
 
 type SelfHostedSyncConnection = Extract< SyncConnection, { siteUrl: string } >;
 type SelfHostedSshConnection = Extract< SyncConnection, { provider: 'self-hosted-ssh' } >;
@@ -170,6 +175,7 @@ function SelfHostedConnectionsList( {
 	onEdit,
 	onChooseContent,
 	onPullSshSite,
+	onPushSshSite,
 	pushingConnectionId,
 	pullingConnectionId,
 }: {
@@ -178,6 +184,7 @@ function SelfHostedConnectionsList( {
 	onEdit: ( connection: SelfHostedSyncConnection ) => void;
 	onChooseContent: ( connectionId: string ) => void;
 	onPullSshSite: ( connection: SelfHostedSyncConnection ) => void;
+	onPushSshSite: ( connection: SelfHostedSyncConnection ) => void;
 	pushingConnectionId: string | null;
 	pullingConnectionId: string | null;
 } ) {
@@ -217,7 +224,7 @@ function SelfHostedConnectionsList( {
 								{ __( 'Disconnect' ) }
 							</Button>
 						</div>
-						<div className="mt-4 flex justify-end gap-3">
+						<div className="mt-4 flex flex-wrap justify-end gap-3">
 							<Button variant="secondary" onClick={ () => onEdit( connection ) }>
 								{ __( 'Edit credentials' ) }
 							</Button>
@@ -241,6 +248,19 @@ function SelfHostedConnectionsList( {
 								onClick={ () => onPullSshSite( connection ) }
 							>
 								{ pullingConnectionId === connection.id ? __( 'Pulling…' ) : __( 'Pull to local' ) }
+							</Button>
+							<Button
+								variant="secondary"
+								disabled={
+									connection.provider !== 'self-hosted-ssh' ||
+									connection.environmentType === 'production' ||
+									pushingConnectionId === connection.id
+								}
+								onClick={ () => onPushSshSite( connection ) }
+							>
+								{ pushingConnectionId === connection.id
+									? __( 'Pushing…' )
+									: __( 'Push to remote' ) }
 							</Button>
 						</div>
 					</div>
@@ -471,6 +491,7 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 	const [ sshSyncConnection, setSshSyncConnection ] = useState< SelfHostedSshConnection | null >(
 		null
 	);
+	const [ sshSyncType, setSshSyncType ] = useState< 'pull' | 'push' >( 'pull' );
 
 	const connectedSiteIds = connectedSites.map( ( { id } ) => id );
 	// Subscribe to /me/sites so reconcileConnectedSites runs on page load to
@@ -647,6 +668,53 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 		}
 	};
 
+	const handlePushSelfHostedSshSite = async (
+		connection: SelfHostedSshConnection,
+		options: SelfHostedSshPushOptions
+	) => {
+		const CANCEL_BUTTON_INDEX = 1;
+		const PUSH_BUTTON_INDEX = 0;
+		const includesDatabase =
+			options.optionsToSync.includes( 'all' ) || options.optionsToSync.includes( 'sqls' );
+		const { response } = await getIpcApi().showMessageBox( {
+			message: __( 'Push selected local data to the remote site?' ),
+			detail: includesDatabase
+				? __(
+						'Studio will create a remote backup, then replace the remote database and restore the selected wp-content files. This action is unavailable for production connections.'
+				  )
+				: __(
+						'Studio will create a remote backup, then replace the selected wp-content files. This action is unavailable for production connections.'
+				  ),
+			buttons: [ __( 'Back up and push' ), __( 'Cancel' ) ],
+			cancelId: CANCEL_BUTTON_INDEX,
+		} );
+
+		if ( response !== PUSH_BUTTON_INDEX ) {
+			return;
+		}
+
+		setPushingConnectionId( connection.id );
+		try {
+			const { backupPath } = await getIpcApi().pushSelfHostedSshSite(
+				selectedSite.id,
+				connection.id,
+				options
+			);
+			getIpcApi().showNotification( {
+				title: __( 'Site pushed' ),
+				body: sprintf( __( 'Remote backup retained at %s.' ), backupPath ),
+			} );
+			setSshSyncConnection( null );
+		} catch ( error ) {
+			getIpcApi().showErrorMessageBox( {
+				title: __( 'Failed to push site' ),
+				message: error instanceof Error ? error.message : __( 'Please try again.' ),
+			} );
+		} finally {
+			setPushingConnectionId( null );
+		}
+	};
+
 	const handleSiteSelection = async ( selectedSiteFromList: SyncSite ) => {
 		if ( reduxModalMode === 'push' || reduxModalMode === 'pull' ) {
 			dispatch( connectedSitesActions.openModal( reduxModalMode ) );
@@ -678,6 +746,16 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 							onChooseContent={ handleChooseSelfHostedRestContent }
 							onPullSshSite={ ( connection ) => {
 								if ( connection.provider === 'self-hosted-ssh' ) {
+									setSshSyncType( 'pull' );
+									setSshSyncConnection( connection );
+								}
+							} }
+							onPushSshSite={ ( connection ) => {
+								if (
+									connection.provider === 'self-hosted-ssh' &&
+									connection.environmentType !== 'production'
+								) {
+									setSshSyncType( 'push' );
 									setSshSyncConnection( connection );
 								}
 							} }
@@ -799,13 +877,19 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 				<SelfHostedSshSyncDialog
 					localSite={ selectedSite }
 					connection={ sshSyncConnection }
-					isPulling={ pullingConnectionId === sshSyncConnection.id }
+					type={ sshSyncType }
+					isSyncing={
+						sshSyncType === 'pull'
+							? pullingConnectionId === sshSyncConnection.id
+							: pushingConnectionId === sshSyncConnection.id
+					}
 					onRequestClose={ () => {
 						if ( ! pullingConnectionId ) {
 							setSshSyncConnection( null );
 						}
 					} }
 					onPull={ ( options ) => handlePullSelfHostedSshSite( sshSyncConnection, options ) }
+					onPush={ ( options ) => handlePushSelfHostedSshSite( sshSyncConnection, options ) }
 				/>
 			) }
 

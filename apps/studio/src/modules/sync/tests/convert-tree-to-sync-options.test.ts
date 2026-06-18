@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { TreeNode } from 'src/components/tree-view';
-import { convertTreeToSelfHostedSshPullOptions } from 'src/modules/sync/lib/convert-tree-to-sync-options';
+import {
+	convertTreeToSelfHostedSshPullOptions,
+	convertTreeToSelfHostedSshPushOptions,
+} from 'src/modules/sync/lib/convert-tree-to-sync-options';
 
 const createTree = ( {
 	database = false,
@@ -107,6 +110,41 @@ describe( 'convertTreeToSelfHostedSshPullOptions', () => {
 		).toEqual( {
 			optionsToSync: [ 'paths' ],
 			specificSelectionPaths: [ '' ],
+		} );
+	} );
+} );
+
+describe( 'convertTreeToSelfHostedSshPushOptions', () => {
+	it( 'uses the shared full push option', () => {
+		expect(
+			convertTreeToSelfHostedSshPushOptions(
+				createTree( {
+					database: true,
+					files: true,
+				} )
+			)
+		).toEqual( { optionsToSync: [ 'all' ] } );
+	} );
+
+	it( 'preserves selected local wp-content paths', () => {
+		expect(
+			convertTreeToSelfHostedSshPushOptions(
+				createTree( {
+					children: [
+						{
+							id: 'plugins/example',
+							name: 'example',
+							label: 'example',
+							checked: true,
+							path: 'wp-content/plugins/example',
+							pathId: 'wp-content/plugins/example',
+						},
+					],
+				} )
+			)
+		).toEqual( {
+			optionsToSync: [ 'plugins' ],
+			specificSelectionPaths: [ 'plugins/example' ],
 		} );
 	} );
 } );

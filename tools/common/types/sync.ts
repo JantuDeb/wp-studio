@@ -277,3 +277,6 @@ export const selfHostedSshPullOptionsSchema = z.object( {
 	specificSelectionPaths: z.array( z.string() ).optional(),
 } );
 export type SelfHostedSshPullOptions = z.infer< typeof selfHostedSshPullOptionsSchema >;
+
+export const selfHostedSshPushOptionsSchema = selfHostedSshPullOptionsSchema;
+export type SelfHostedSshPushOptions = z.infer< typeof selfHostedSshPushOptionsSchema >;

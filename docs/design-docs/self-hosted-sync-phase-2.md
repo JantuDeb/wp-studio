@@ -161,5 +161,30 @@ Included:
 Still pending:
 
 - [ ] Extract the complete WP.com and SSH dialog shell into a provider-neutral sync dialog component.
-- [ ] Add SSH staging push using the same selection model, with mandatory backup.
+- [x] Add SSH staging push using the same selection model, with mandatory backup.
 - [ ] Disable database push for production until backup, dry-run, and typed confirmation exist.
+
+## SSH Staging Push Addendum
+
+SSH connections marked as staging or development can push selected local data. Production SSH push remains disabled.
+
+Included:
+
+- [x] Reuse Studio's existing export pipeline for full, database-only, files-only, and selected-path archives.
+- [x] Reuse the shared database/files tree for SSH pull and push.
+- [x] Upload the local archive over SFTP into a temporary directory under the configured WordPress path.
+- [x] Create a remote backup before modifying selected files or the database.
+- [x] Retain the backup under `<wordpress-path>/.studio-backups/`.
+- [x] Replace selected remote paths while leaving unselected paths unchanged.
+- [x] Reset and import the remote database only when database sync is selected.
+- [x] Run local-to-remote URL search-replace after database import.
+- [x] Flush the remote object cache when WP-CLI supports it.
+- [x] Remove temporary remote and local push files after completion or failure.
+- [x] Reject SSH push for production connections in both the renderer and main process.
+
+Still pending:
+
+- [ ] Backup browser and one-click rollback.
+- [ ] Push dry-run with remote archive size and disk-space estimates.
+- [ ] Progress events for export, upload, backup, restore, and search-replace.
+- [ ] Production file push policy; production database push remains disabled.

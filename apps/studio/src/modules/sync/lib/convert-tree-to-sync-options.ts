@@ -1,7 +1,7 @@
 import { categorizePath } from '@studio/common/lib/sync/tree-utils';
 import { SYNC_OPTIONS } from 'src/constants';
 import { PullSiteOptions } from 'src/stores/sync';
-import type { SelfHostedSshPullOptions } from '@studio/common/types/sync';
+import type { SelfHostedSshPullOptions, SelfHostedSshPushOptions } from '@studio/common/types/sync';
 import type { TreeNode } from 'src/components/tree-view';
 import type { SyncOption } from 'src/types';
 
@@ -164,4 +164,14 @@ export const convertTreeToSelfHostedSshPullOptions = (
 	}
 
 	return { optionsToSync, specificSelectionPaths };
+};
+
+export const convertTreeToSelfHostedSshPushOptions = (
+	tree: TreeNode[]
+): SelfHostedSshPushOptions => {
+	const pushOptions = convertTreeToPushOptions( tree );
+	return {
+		optionsToSync: pushOptions.optionsToSync,
+		specificSelectionPaths: pushOptions.specificSelectionPaths,
+	};
 };
