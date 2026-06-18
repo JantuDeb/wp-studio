@@ -143,12 +143,14 @@ const api: IpcApi = {
 	testSyncConnection: ( connection ) => ipcRendererInvoke( 'testSyncConnection', connection ),
 	listSelfHostedRestContent: ( localSiteId ) =>
 		ipcRendererInvoke( 'listSelfHostedRestContent', localSiteId ),
+	listSelfHostedSshFiles: ( localSiteId, connectionId, selectedPath ) =>
+		ipcRendererInvoke( 'listSelfHostedSshFiles', localSiteId, connectionId, selectedPath ),
 	previewSelfHostedRestContentPush: ( localSiteId, connectionId, options ) =>
 		ipcRendererInvoke( 'previewSelfHostedRestContentPush', localSiteId, connectionId, options ),
 	pushSelfHostedRestContent: ( localSiteId, connectionId, options ) =>
 		ipcRendererInvoke( 'pushSelfHostedRestContent', localSiteId, connectionId, options ),
-	pullSelfHostedSshSite: ( localSiteId, connectionId ) =>
-		ipcRendererInvoke( 'pullSelfHostedSshSite', localSiteId, connectionId ),
+	pullSelfHostedSshSite: ( localSiteId, connectionId, options ) =>
+		ipcRendererInvoke( 'pullSelfHostedSshSite', localSiteId, connectionId, options ),
 	pullSiteFromLive: ( siteFolder, remoteSiteId ) =>
 		ipcRendererInvoke( 'pullSiteFromLive', siteFolder, remoteSiteId ),
 	addSyncOperation: ( id, status ) => ipcRendererSend( 'addSyncOperation', id, status ),

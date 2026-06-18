@@ -138,7 +138,28 @@ Included:
 
 Still pending:
 
-- [ ] Selective pull parts for database, plugins, themes, uploads, and other `wp-content` folders.
+- [x] Selective pull parts for database, plugins, themes, uploads, and other `wp-content` folders.
 - [ ] Progress events for remote export, SFTP download, and import phases.
 - [ ] Remote archive size estimate before download.
 - [ ] Better remote cleanup reporting if cleanup fails.
+
+## Shared Sync Selection Addendum
+
+SSH pull now reuses the same top-level sync tree and file/folder tree primitives as the existing WordPress.com sync dialog.
+
+Included:
+
+- [x] Choose database independently from files and folders.
+- [x] Browse the remote `wp-content` tree over SFTP.
+- [x] Select a complete `wp-content` pull or specific files and directories.
+- [x] Restrict listing and archive paths to the user-configured WordPress path and its `wp-content` directory.
+- [x] Reject absolute/traversal selections before building remote commands.
+- [x] Keep full pulls on the existing replacement import path.
+- [x] Use the existing Jetpack merge importer for partial file pulls so unrelated local files are preserved.
+- [x] Keep provider-specific execution behind SSH IPC handlers while sharing selection UI primitives.
+
+Still pending:
+
+- [ ] Extract the complete WP.com and SSH dialog shell into a provider-neutral sync dialog component.
+- [ ] Add SSH staging push using the same selection model, with mandatory backup.
+- [ ] Disable database push for production until backup, dry-run, and typed confirmation exist.

@@ -14,6 +14,7 @@ import { useOffline } from 'src/hooks/use-offline';
 import { getIpcApi } from 'src/lib/get-ipc-api';
 import { ConnectButton } from 'src/modules/sync/components/connect-button';
 import { SelfHostedConnectionWizard } from 'src/modules/sync/components/self-hosted-connection-wizard';
+import { SelfHostedSshSyncDialog } from 'src/modules/sync/components/self-hosted-ssh-sync-dialog';
 import { SyncConnectedSites } from 'src/modules/sync/components/sync-connected-sites';
 import { SyncDialog } from 'src/modules/sync/components/sync-dialog';
 import { SyncSitesModalSelector } from 'src/modules/sync/components/sync-sites-modal-selector';
@@ -32,9 +33,10 @@ import {
 	useGetConnectedSitesForLocalSiteQuery,
 } from 'src/stores/sync/connected-sites';
 import { useGetWpComSitesQuery } from 'src/stores/sync/wpcom-sites';
-import type { SyncConnection, SyncSite } from '@studio/common/types/sync';
+import type { SelfHostedSshPullOptions, SyncConnection, SyncSite } from '@studio/common/types/sync';
 
 type SelfHostedSyncConnection = Extract< SyncConnection, { siteUrl: string } >;
+type SelfHostedSshConnection = Extract< SyncConnection, { provider: 'self-hosted-ssh' } >;
 type ContentSelectionItem = Awaited<
 	ReturnType< IpcApi[ 'listSelfHostedRestContent' ] >
 >[ number ];
@@ -466,6 +468,9 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 	const [ isPreviewingContentPush, setIsPreviewingContentPush ] = useState( false );
 	const [ editingSelfHostedConnection, setEditingSelfHostedConnection ] =
 		useState< SelfHostedSyncConnection | null >( null );
+	const [ sshSyncConnection, setSshSyncConnection ] = useState< SelfHostedSshConnection | null >(
+		null
+	);
 
 	const connectedSiteIds = connectedSites.map( ( { id } ) => id );
 	// Subscribe to /me/sites so reconcileConnectedSites runs on page load to
@@ -595,14 +600,27 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 		}
 	};
 
-	const handlePullSelfHostedSshSite = async ( connection: SelfHostedSyncConnection ) => {
+	const handlePullSelfHostedSshSite = async (
+		connection: SelfHostedSshConnection,
+		options: SelfHostedSshPullOptions
+	) => {
 		const CANCEL_BUTTON_INDEX = 1;
 		const PULL_BUTTON_INDEX = 0;
+		const isFullPull = options.optionsToSync.includes( 'all' );
+		const includesDatabase = isFullPull || options.optionsToSync.includes( 'sqls' );
 		const { response } = await getIpcApi().showMessageBox( {
-			message: __( 'Pull remote site into Studio?' ),
-			detail: __(
-				'Studio will download the remote database and wp-content from the configured WordPress path and import them into this local site. This can replace local content, uploads, themes, plugins, and database changes.'
-			),
+			message: __( 'Pull selected remote data into Studio?' ),
+			detail: isFullPull
+				? __(
+						'This full pull replaces local synced content and the local database with data from the configured WordPress path.'
+				  )
+				: includesDatabase
+				? __(
+						'Selected wp-content files will be merged into the local site, and the local database will be replaced.'
+				  )
+				: __(
+						'Selected wp-content files will be merged into the local site. Unselected local files will remain unchanged.'
+				  ),
 			buttons: [ __( 'Pull to local' ), __( 'Cancel' ) ],
 			cancelId: CANCEL_BUTTON_INDEX,
 		} );
@@ -613,11 +631,12 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 
 		setPullingConnectionId( connection.id );
 		try {
-			await getIpcApi().pullSelfHostedSshSite( selectedSite.id, connection.id );
+			await getIpcApi().pullSelfHostedSshSite( selectedSite.id, connection.id, options );
 			getIpcApi().showNotification( {
 				title: __( 'Site pulled' ),
-				body: __( 'The remote site was imported into this local Studio site.' ),
+				body: __( 'The selected remote data was imported into this local Studio site.' ),
 			} );
+			setSshSyncConnection( null );
 		} catch ( error ) {
 			getIpcApi().showErrorMessageBox( {
 				title: __( 'Failed to pull site' ),
@@ -657,7 +676,11 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 							onDisconnect={ handleDisconnectSelfHosted }
 							onEdit={ setEditingSelfHostedConnection }
 							onChooseContent={ handleChooseSelfHostedRestContent }
-							onPullSshSite={ handlePullSelfHostedSshSite }
+							onPullSshSite={ ( connection ) => {
+								if ( connection.provider === 'self-hosted-ssh' ) {
+									setSshSyncConnection( connection );
+								}
+							} }
 							pushingConnectionId={ pushingConnectionId }
 							pullingConnectionId={ pullingConnectionId }
 						/>
@@ -769,6 +792,20 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 					onPush={ ( selectedItems ) =>
 						handlePushSelfHostedRestContent( pickingConnectionId, selectedItems )
 					}
+				/>
+			) }
+
+			{ sshSyncConnection && (
+				<SelfHostedSshSyncDialog
+					localSite={ selectedSite }
+					connection={ sshSyncConnection }
+					isPulling={ pullingConnectionId === sshSyncConnection.id }
+					onRequestClose={ () => {
+						if ( ! pullingConnectionId ) {
+							setSshSyncConnection( null );
+						}
+					} }
+					onPull={ ( options ) => handlePullSelfHostedSshSite( sshSyncConnection, options ) }
 				/>
 			) }
 

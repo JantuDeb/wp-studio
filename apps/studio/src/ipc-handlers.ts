@@ -200,6 +200,7 @@ export {
 	getConnectedWpcomSites,
 	getSyncConnections,
 	listSelfHostedRestContent,
+	listSelfHostedSshFiles,
 	pauseSyncUpload,
 	previewSelfHostedRestContentPush,
 	pullSelfHostedSshSite,

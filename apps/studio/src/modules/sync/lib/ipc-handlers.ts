@@ -22,13 +22,15 @@ import wpcomFactory from '@studio/common/lib/wpcom-factory';
 import wpcomXhrRequest from '@studio/common/lib/wpcom-xhr-request-factory';
 import {
 	selfHostedRestConnectionWithAuthSchema,
+	selfHostedSshPullOptionsSchema,
 	selfHostedSshConnectionWithAuthSchema,
 	SyncConnection,
 	SyncSite,
+	type SelfHostedSshPullOptions,
 	type SelfHostedRestConnectionWithAuth,
 	type SelfHostedSshConnectionWithAuth,
 } from '@studio/common/types/sync';
-import { Client, type ConnectConfig, type SFTPWrapper } from 'ssh2';
+import { Client, type ConnectConfig, type FileEntryWithStats, type SFTPWrapper } from 'ssh2';
 import { Upload } from 'tus-js-client';
 import { z } from 'zod';
 import {
@@ -59,6 +61,7 @@ import {
 	stripSyncConnectionAuth,
 	stripSyncConnectionsAuth,
 } from './sync-credential-vault';
+import type { RawDirectoryEntry } from '@studio/common/types/sync-tree';
 
 type LocalRenderedField = {
 	raw?: string;
@@ -873,24 +876,130 @@ function getRemoteStudioSyncWorkDir( connection: SelfHostedSshConnectionWithAuth
 
 function getSshPullArchiveCommand(
 	connection: SelfHostedSshConnectionWithAuth,
-	remoteWorkDir: string
+	remoteWorkDir: string,
+	options: SelfHostedSshPullOptions
 ): string {
 	const wpCliPath = connection.auth.wpCliPath?.trim() || 'wp';
 	const remotePath = quoteRemoteShellArg( connection.auth.remoteWordPressPath );
 	const workDir = quoteRemoteShellArg( remoteWorkDir );
 	const archivePath = quoteRemoteShellArg( `${ remoteWorkDir }/studio-pull.tar.gz` );
-	return [
-		`set -e`,
-		`test -d ${ remotePath }`,
-		`mkdir -p ${ workDir }/app/sql ${ workDir }/app/public`,
-		`cd ${ remotePath }`,
-		`${ quoteRemoteShellArg(
-			wpCliPath
-		) } db export ${ workDir }/app/sql/database.sql --path=${ remotePath } --add-drop-table`,
-		`cp -a ${ remotePath }/wp-content ${ workDir }/app/public/wp-content`,
-		`tar -czf ${ archivePath } -C ${ workDir } app`,
-		`printf '%s\\n' ${ archivePath }`,
-	].join( ' && ' );
+	const isFullPull = options.optionsToSync.includes( 'all' );
+	const commands = [ `set -e`, `test -d ${ remotePath }`, `cd ${ remotePath }` ];
+
+	if ( isFullPull ) {
+		commands.push(
+			`mkdir -p ${ workDir }/app/sql ${ workDir }/app/public`,
+			`${ quoteRemoteShellArg(
+				wpCliPath
+			) } db export ${ workDir }/app/sql/database.sql --path=${ remotePath } --add-drop-table`,
+			`cp -a ${ remotePath }/wp-content ${ workDir }/app/public/wp-content`,
+			`tar -czf ${ archivePath } -C ${ workDir } app`
+		);
+	} else {
+		commands.push( `mkdir -p ${ workDir }/sql ${ workDir }/wp-content` );
+
+		if ( options.optionsToSync.includes( 'sqls' ) ) {
+			commands.push(
+				`${ quoteRemoteShellArg(
+					wpCliPath
+				) } db export ${ workDir }/sql/database.sql --path=${ remotePath } --add-drop-table`
+			);
+		}
+
+		for ( const selectedPath of options.specificSelectionPaths ?? [] ) {
+			const normalizedPath = normalizeSelfHostedWpContentPath( selectedPath );
+			if ( normalizedPath === '' ) {
+				commands.push( `cp -a ${ remotePath }/wp-content/. ${ workDir }/wp-content/` );
+				continue;
+			}
+			const source = quoteRemoteShellArg(
+				path.posix.join( connection.auth.remoteWordPressPath, 'wp-content', normalizedPath )
+			);
+			const destination = quoteRemoteShellArg(
+				path.posix.join( remoteWorkDir, 'wp-content', normalizedPath )
+			);
+			const destinationParent = quoteRemoteShellArg(
+				path.posix.dirname( path.posix.join( remoteWorkDir, 'wp-content', normalizedPath ) )
+			);
+			commands.push( `mkdir -p ${ destinationParent }`, `cp -a ${ source } ${ destination }` );
+		}
+
+		commands.push( `tar -czf ${ archivePath } -C ${ workDir } sql wp-content` );
+	}
+
+	commands.push( `printf '%s\\n' ${ archivePath }` );
+	return commands.join( ' && ' );
+}
+
+function normalizeSelfHostedWpContentPath( selectedPath: string ): string {
+	const normalizedPath = selectedPath
+		.replace( /\\/g, '/' )
+		.replace( /^\/?wp-content\/?/, '' )
+		.replace( /^\/+|\/+$/g, '' );
+	const segments = normalizedPath.split( '/' ).filter( Boolean );
+
+	if (
+		selectedPath.includes( '\0' ) ||
+		segments.some( ( segment ) => segment === '.' || segment === '..' )
+	) {
+		throw new Error( 'Selected SSH sync path must stay inside wp-content.' );
+	}
+
+	return segments.join( '/' );
+}
+
+async function readSftpDirectory(
+	sftp: SFTPWrapper,
+	remotePath: string
+): Promise< FileEntryWithStats[] > {
+	return new Promise( ( resolve, reject ) => {
+		sftp.readdir( remotePath, ( error, entries ) => {
+			if ( error ) {
+				reject( error );
+				return;
+			}
+			resolve( entries );
+		} );
+	} );
+}
+
+export async function listSelfHostedSshFiles(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string,
+	selectedPath: string = ''
+): Promise< RawDirectoryEntry[] > {
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+	const normalizedPath = normalizeSelfHostedWpContentPath( selectedPath );
+	const remotePath = path.posix.join(
+		parsed.auth.remoteWordPressPath,
+		'wp-content',
+		normalizedPath
+	);
+	const client = await connectSshClient( parsed );
+
+	try {
+		const sftp = await getSftpClient( client );
+		const entries = await readSftpDirectory( sftp, remotePath );
+		sftp.end();
+		return entries
+			.filter( ( entry ) => entry.filename !== '.' && entry.filename !== '..' )
+			.map( ( entry ) => {
+				const relativePath = [ normalizedPath, entry.filename ].filter( Boolean ).join( '/' );
+				const isDirectory = entry.attrs.isDirectory();
+				return {
+					name: entry.filename,
+					isDirectory,
+					path: `wp-content/${ relativePath }`,
+					children: isDirectory ? [] : undefined,
+				};
+			} );
+	} finally {
+		client.end();
+	}
 }
 
 async function getSftpClient( client: Client ): Promise< SFTPWrapper > {
@@ -923,7 +1032,8 @@ async function downloadSftpFile(
 
 async function createSelfHostedSshPullArchive(
 	connection: SelfHostedSshConnectionWithAuth,
-	localSiteId: string
+	localSiteId: string,
+	options: SelfHostedSshPullOptions
 ): Promise< { archivePath: string; remoteArchivePath: string } > {
 	const client = await connectSshClient( connection );
 	const remoteWorkDir = getRemoteStudioSyncWorkDir( connection );
@@ -934,7 +1044,10 @@ async function createSelfHostedSshPullArchive(
 
 	try {
 		remoteArchivePath = (
-			await runConnectedSshCommand( client, getSshPullArchiveCommand( connection, remoteWorkDir ) )
+			await runConnectedSshCommand(
+				client,
+				getSshPullArchiveCommand( connection, remoteWorkDir, options )
+			)
 		).trim();
 		if ( ! remoteArchivePath ) {
 			throw new Error( 'Remote archive path was not returned.' );
@@ -1464,15 +1577,30 @@ export async function pushSelfHostedRestContent(
 export async function pullSelfHostedSshSite(
 	event: IpcMainInvokeEvent,
 	localSiteId: string,
-	connectionId: string
+	connectionId: string,
+	options: SelfHostedSshPullOptions
 ): Promise< { archivePath: string; remoteArchivePath: string } > {
 	const connections = await getSyncConnectionsForLocalSite( localSiteId );
 	const connection = connections.find( ( item ) => item.id === connectionId );
 	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
 	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+	const parsedOptions = selfHostedSshPullOptionsSchema.parse( options );
+	const isFullPull = parsedOptions.optionsToSync.includes( 'all' );
+	const includesDatabase = parsedOptions.optionsToSync.includes( 'sqls' );
+	const includesPaths = parsedOptions.optionsToSync.includes( 'paths' );
+	const hasSelectedPaths = Boolean( parsedOptions.specificSelectionPaths?.length );
+	if (
+		parsedOptions.optionsToSync.length === 0 ||
+		( isFullPull && parsedOptions.optionsToSync.length !== 1 ) ||
+		( ! isFullPull && ! includesDatabase && ! ( includesPaths && hasSelectedPaths ) ) ||
+		( hasSelectedPaths && ! includesPaths )
+	) {
+		throw new Error( 'Select at least one database or wp-content item to pull.' );
+	}
 	const { archivePath, remoteArchivePath } = await createSelfHostedSshPullArchive(
 		parsed,
-		localSiteId
+		localSiteId,
+		parsedOptions
 	);
 
 	await importSite( event, localSiteId, archivePath, {

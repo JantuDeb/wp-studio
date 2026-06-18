@@ -1,6 +1,7 @@
 import { categorizePath } from '@studio/common/lib/sync/tree-utils';
 import { SYNC_OPTIONS } from 'src/constants';
 import { PullSiteOptions } from 'src/stores/sync';
+import type { SelfHostedSshPullOptions } from '@studio/common/types/sync';
 import type { TreeNode } from 'src/components/tree-view';
 import type { SyncOption } from 'src/types';
 
@@ -125,4 +126,42 @@ export const convertTreeToPullOptions = ( tree: TreeNode[] ): PullSiteOptions =>
 	}
 
 	return pullOptions;
+};
+
+export const convertTreeToSelfHostedSshPullOptions = (
+	tree: TreeNode[]
+): SelfHostedSshPullOptions => {
+	const { isDatabaseSelected, filesAndFolders, wpContent } = getCommonNodes( tree );
+
+	if ( ! filesAndFolders || ! isDatabaseSelected ) {
+		throw new Error(
+			'Error when converting tree to SSH pull options. Database or files and folders not found'
+		);
+	}
+
+	if ( isDatabaseSelected.checked && filesAndFolders.checked ) {
+		return { optionsToSync: [ SYNC_OPTIONS.all ] };
+	}
+
+	const optionsToSync: SyncOption[] = [];
+	let specificSelectionPaths: string[] | undefined;
+
+	if ( isDatabaseSelected.checked ) {
+		optionsToSync.push( SYNC_OPTIONS.sqls );
+	}
+
+	if ( filesAndFolders.checked ) {
+		optionsToSync.push( SYNC_OPTIONS.paths );
+		specificSelectionPaths = [ '' ];
+	} else {
+		const paths = collectPathIds( wpContent?.children ?? [] ).map( ( selectedPath ) =>
+			selectedPath.replace( /^\/?wp-content\/?/, '' ).replace( /\/$/, '' )
+		);
+		if ( paths.length > 0 ) {
+			optionsToSync.push( SYNC_OPTIONS.paths );
+			specificSelectionPaths = paths;
+		}
+	}
+
+	return { optionsToSync, specificSelectionPaths };
 };

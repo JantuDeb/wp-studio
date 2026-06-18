@@ -1,0 +1,112 @@
+import { describe, expect, it } from 'vitest';
+import { TreeNode } from 'src/components/tree-view';
+import { convertTreeToSelfHostedSshPullOptions } from 'src/modules/sync/lib/convert-tree-to-sync-options';
+
+const createTree = ( {
+	database = false,
+	files = false,
+	children = [],
+}: {
+	database?: boolean;
+	files?: boolean;
+	children?: TreeNode[];
+} ): TreeNode[] => [
+	{
+		id: 'filesAndFolders',
+		name: 'filesAndFolders',
+		label: 'Files and folders',
+		checked: files,
+		children: [
+			{
+				id: 'wp-content',
+				name: 'wp-content',
+				label: 'wp-content',
+				checked: files,
+				path: 'wp-content',
+				children,
+			},
+		],
+	},
+	{
+		id: 'sqls',
+		name: 'sqls',
+		label: 'Database',
+		checked: database,
+	},
+];
+
+describe( 'convertTreeToSelfHostedSshPullOptions', () => {
+	it( 'uses a full pull when database and all files are selected', () => {
+		expect(
+			convertTreeToSelfHostedSshPullOptions(
+				createTree( {
+					database: true,
+					files: true,
+				} )
+			)
+		).toEqual( { optionsToSync: [ 'all' ] } );
+	} );
+
+	it( 'supports database-only pulls', () => {
+		expect(
+			convertTreeToSelfHostedSshPullOptions(
+				createTree( {
+					database: true,
+				} )
+			)
+		).toEqual( { optionsToSync: [ 'sqls' ], specificSelectionPaths: undefined } );
+	} );
+
+	it( 'converts checked wp-content nodes to relative SSH paths', () => {
+		expect(
+			convertTreeToSelfHostedSshPullOptions(
+				createTree( {
+					children: [
+						{
+							id: 'plugins/example',
+							name: 'example',
+							label: 'example',
+							checked: true,
+							path: 'wp-content/plugins/example',
+							pathId: 'wp-content/plugins/example',
+						},
+						{
+							id: 'uploads',
+							name: 'uploads',
+							label: 'uploads',
+							checked: false,
+							indeterminate: true,
+							path: 'wp-content/uploads',
+							children: [
+								{
+									id: 'uploads/2026',
+									name: '2026',
+									label: '2026',
+									checked: true,
+									path: 'wp-content/uploads/2026',
+									pathId: 'wp-content/uploads/2026',
+								},
+							],
+						},
+					],
+				} )
+			)
+		).toEqual( {
+			optionsToSync: [ 'paths' ],
+			specificSelectionPaths: [ 'plugins/example', 'uploads/2026' ],
+		} );
+	} );
+
+	it( 'represents a files-only full wp-content pull as a merge selection', () => {
+		expect(
+			convertTreeToSelfHostedSshPullOptions(
+				createTree( {
+					files: true,
+				} )
+			)
+		).toEqual( {
+			optionsToSync: [ 'paths' ],
+			specificSelectionPaths: [ '' ],
+		} );
+	} );
+} );

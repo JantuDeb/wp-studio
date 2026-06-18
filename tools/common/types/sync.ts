@@ -271,3 +271,9 @@ export const syncOptionSchema = z.enum( [
 	'contents',
 ] );
 export type SyncOption = z.infer< typeof syncOptionSchema >;
+
+export const selfHostedSshPullOptionsSchema = z.object( {
+	optionsToSync: z.array( syncOptionSchema ),
+	specificSelectionPaths: z.array( z.string() ).optional(),
+} );
+export type SelfHostedSshPullOptions = z.infer< typeof selfHostedSshPullOptionsSchema >;
