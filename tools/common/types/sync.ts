@@ -381,6 +381,13 @@ export const selfHostedHtaccessSchema = z.object( {
 } );
 export type SelfHostedHtaccess = z.infer< typeof selfHostedHtaccessSchema >;
 
+export const selfHostedPhpVersionsSchema = z.object( {
+	current: z.string().nullable(),
+	// Installed `phpX.Y` versions discovered on the host, e.g. [ '8.1', '8.2', '8.3' ].
+	available: z.array( z.string() ),
+} );
+export type SelfHostedPhpVersions = z.infer< typeof selfHostedPhpVersionsSchema >;
+
 export type SelfHostedSshProgress = {
 	localSiteId: string;
 	connectionId: string;

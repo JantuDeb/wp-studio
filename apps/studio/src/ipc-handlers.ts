@@ -197,6 +197,8 @@ export {
 	detectSelfHostedServerStack,
 	getSelfHostedHtaccess,
 	updateSelfHostedHtaccess,
+	reloadSelfHostedWebServer,
+	getSelfHostedPhpVersions,
 	deleteSelfHostedSshBackup,
 	deleteSyncConnection,
 	disconnectWpcomSites,

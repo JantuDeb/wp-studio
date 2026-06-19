@@ -148,6 +148,10 @@ const api: IpcApi = {
 		ipcRendererInvoke( 'getSelfHostedHtaccess', localSiteId, connectionId ),
 	updateSelfHostedHtaccess: ( localSiteId, connectionId, content ) =>
 		ipcRendererInvoke( 'updateSelfHostedHtaccess', localSiteId, connectionId, content ),
+	reloadSelfHostedWebServer: ( localSiteId, connectionId, options ) =>
+		ipcRendererInvoke( 'reloadSelfHostedWebServer', localSiteId, connectionId, options ),
+	getSelfHostedPhpVersions: ( localSiteId, connectionId ) =>
+		ipcRendererInvoke( 'getSelfHostedPhpVersions', localSiteId, connectionId ),
 	getSelfHostedSshDebugLog: ( localSiteId, connectionId ) =>
 		ipcRendererInvoke( 'getSelfHostedSshDebugLog', localSiteId, connectionId ),
 	downloadSelfHostedSshDebugLog: ( localSiteId, connectionId ) =>

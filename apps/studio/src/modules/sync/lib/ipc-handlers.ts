@@ -45,6 +45,7 @@ import {
 	type SelfHostedSshAdvisory,
 	type SelfHostedServerStack,
 	type SelfHostedHtaccess,
+	type SelfHostedPhpVersions,
 	type SyncDeploymentRecord,
 	type SelfHostedSshMaintenanceAction,
 	type SelfHostedSshDebugLog,
@@ -1564,6 +1565,99 @@ export async function updateSelfHostedHtaccess(
 		} );
 		await runConnectedSshCommand( client, command );
 		return { backupPath };
+	} finally {
+		client.end();
+	}
+}
+
+async function detectStackOverClient(
+	client: Client,
+	connection: SelfHostedSshConnectionWithAuth
+): Promise< SelfHostedServerStack > {
+	const docroot = connection.auth.remoteWordPressPath.replace( /\/+$/, '' );
+	return parseServerStackProbe(
+		await runConnectedSshCommand( client, getServerStackProbeCommand( docroot ) ),
+		docroot
+	);
+}
+
+/**
+ * Validate and gracefully reload the remote web server (doc 8.1), optionally reloading PHP-FPM too.
+ * The config is tested first; a failed test aborts before reload so a bad config is never applied.
+ * Disabled for production connections.
+ */
+export async function reloadSelfHostedWebServer(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string,
+	options: { reloadPhpFpm?: boolean } = {}
+): Promise< { reloaded: boolean; webServer: string } > {
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+	if ( parsed.environmentType === 'production' ) {
+		throw new Error( 'Reloading the web server is disabled for production connections.' );
+	}
+
+	const client = await connectSshClient( parsed );
+	try {
+		const stack = await detectStackOverClient( client, parsed );
+		if ( stack.webServer === 'unknown' ) {
+			throw new Error( 'Could not detect Apache or nginx on the remote server.' );
+		}
+		const adapter = getWebServerAdapter( stack.webServer, stack.canSudo );
+		// Validate before reloading; abort on an invalid config.
+		await runConnectedSshCommand( client, adapter.testConfigCommand() );
+		await runConnectedSshCommand( client, adapter.reloadCommand() );
+		if ( options.reloadPhpFpm ) {
+			await runConnectedSshCommand( client, adapter.reloadPhpFpmCommand() );
+		}
+		return { reloaded: true, webServer: stack.webServer };
+	} finally {
+		client.end();
+	}
+}
+
+/**
+ * List PHP versions installed on the remote host (doc 8.1) by discovering `phpX.Y` binaries on the
+ * PATH, plus the currently active `php` version. Switching is host-specific and intentionally not
+ * automated here; the UI surfaces the options and guidance.
+ */
+export async function getSelfHostedPhpVersions(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string
+): Promise< SelfHostedPhpVersions > {
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+
+	const client = await connectSshClient( parsed );
+	try {
+		const output = await runConnectedSshCommand(
+			client,
+			[
+				'printf \'current=%s\\n\' "$(php -r \'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;\' 2>/dev/null)"',
+				// Discover php8.1, php8.2, … binaries anywhere on PATH.
+				"for dir in $(printf '%s' \"$PATH\" | tr ':' ' '); do ls \"$dir\"/php[0-9].[0-9] 2>/dev/null; done | sed -n 's@.*/php\\([0-9]\\.[0-9]\\)$@\\1@p' | sort -u | while read -r v; do printf 'available=%s\\n' \"$v\"; done",
+			].join( '; ' )
+		);
+		let current: string | null = null;
+		const available = new Set< string >();
+		for ( const line of output.split( '\n' ) ) {
+			const [ key, value ] = line.split( '=' );
+			if ( key === 'current' && value?.trim() ) {
+				current = value.trim();
+			} else if ( key === 'available' && value?.trim() ) {
+				available.add( value.trim() );
+			}
+		}
+		if ( current ) {
+			available.add( current );
+		}
+		return { current, available: [ ...available ].sort() };
 	} finally {
 		client.end();
 	}

@@ -46,6 +46,9 @@ import type {
 	SelfHostedSshDebugLog,
 	SelfHostedSshIncrementalPreview,
 	SelfHostedSshAdvisory,
+	SelfHostedServerStack,
+	SelfHostedPhpVersions,
+	SelfHostedHtaccess,
 	SyncConnection,
 	SyncDeploymentRecord,
 	SyncSite,
@@ -427,6 +430,135 @@ function SelfHostedDeploymentsModal( {
 	);
 }
 
+function SelfHostedServerPanel( {
+	connection,
+	serverStack,
+	phpVersions,
+	htaccess,
+	isLoading,
+	isSavingHtaccess,
+	onSaveHtaccess,
+	onReloadWebServer,
+}: {
+	connection: SelfHostedSshConnection;
+	serverStack: SelfHostedServerStack | null;
+	phpVersions: SelfHostedPhpVersions | null;
+	htaccess: SelfHostedHtaccess | null;
+	isLoading: boolean;
+	isSavingHtaccess: boolean;
+	onSaveHtaccess: ( content: string ) => void;
+	onReloadWebServer: () => void;
+} ) {
+	const { __ } = useI18n();
+	const isProduction = connection.environmentType === 'production';
+	const [ htaccessDraft, setHtaccessDraft ] = useState( '' );
+
+	useEffect( () => {
+		setHtaccessDraft( htaccess?.content ?? '' );
+	}, [ htaccess ] );
+
+	if ( isLoading ) {
+		return (
+			<div className="flex items-center gap-2 py-4 text-frame-text-secondary text-sm">
+				<Spinner className="!m-0 [&>circle]:stroke-frame-text-secondary" />
+				{ __( 'Detecting server configuration…' ) }
+			</div>
+		);
+	}
+
+	if ( ! serverStack ) {
+		return null;
+	}
+
+	const isApache = serverStack.webServer === 'apache';
+
+	return (
+		<div className="flex flex-col gap-3" data-testid="self-hosted-server-panel">
+			<div className="text-xs font-medium uppercase text-frame-text-secondary">
+				{ __( 'Server' ) }
+			</div>
+			<div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+				{ (
+					[
+						[ __( 'OS' ), serverStack.os ],
+						[
+							__( 'Web server' ),
+							serverStack.webServer === 'unknown'
+								? __( 'Unknown' )
+								: `${ serverStack.webServer }${
+										serverStack.webServerVersion ? ` ${ serverStack.webServerVersion }` : ''
+								  }`,
+						],
+						[
+							__( 'PHP' ),
+							phpVersions?.current
+								? `${ phpVersions.current }${
+										phpVersions.available.length > 1
+											? ` (${ phpVersions.available.join( ', ' ) })`
+											: ''
+								  }`
+								: serverStack.phpVersion ?? __( 'Unknown' ),
+						],
+						[
+							__( 'Database' ),
+							serverStack.dbEngine
+								? `${ serverStack.dbEngine }${
+										serverStack.dbVersion ? ` ${ serverStack.dbVersion }` : ''
+								  }`
+								: __( 'Unknown' ),
+						],
+					] as const
+				 ).map( ( [ label, value ] ) => (
+					<div key={ label } className="border border-frame-border rounded-sm p-3">
+						<div className="text-xs text-frame-text-secondary">{ label }</div>
+						<div className="text-sm font-medium text-frame-text mt-1">{ value }</div>
+					</div>
+				) ) }
+			</div>
+
+			<div className="flex flex-wrap gap-3">
+				<Button variant="secondary" disabled={ isProduction } onClick={ onReloadWebServer }>
+					{ __( 'Validate & reload web server' ) }
+				</Button>
+			</div>
+
+			{ isApache ? (
+				<div className="flex flex-col gap-2">
+					<div className="text-xs font-medium text-frame-text">
+						{ htaccess?.exists ? __( 'Edit .htaccess' ) : __( 'Create .htaccess' ) }
+					</div>
+					<textarea
+						className="w-full h-48 font-mono text-xs p-3 rounded-sm border border-frame-border bg-frame-surface text-frame-text"
+						value={ htaccessDraft }
+						disabled={ isProduction || isSavingHtaccess }
+						onChange={ ( event ) => setHtaccessDraft( event.target.value ) }
+						spellCheck={ false }
+					/>
+					{ isProduction ? (
+						<Notice status="info" isDismissible={ false }>
+							{ __( 'Editing .htaccess is disabled for production connections.' ) }
+						</Notice>
+					) : (
+						<div className="flex justify-end">
+							<Button
+								variant="secondary"
+								disabled={ isSavingHtaccess || htaccessDraft === ( htaccess?.content ?? '' ) }
+								onClick={ () => onSaveHtaccess( htaccessDraft ) }
+							>
+								{ isSavingHtaccess ? __( 'Saving…' ) : __( 'Save .htaccess' ) }
+							</Button>
+						</div>
+					) }
+				</div>
+			) : (
+				<Notice status="info" isDismissible={ false }>
+					{ __( 'This server runs nginx, which does not use .htaccess files.' ) }
+				</Notice>
+			) }
+		</div>
+	);
+}
+
 function SelfHostedSshAdvisoriesPanel( {
 	advisories,
 	isLoading,
@@ -493,6 +625,13 @@ function SelfHostedSshManagementModal( {
 	status,
 	advisories,
 	isLoadingAdvisories,
+	serverStack,
+	phpVersions,
+	htaccess,
+	isLoadingServer,
+	isSavingHtaccess,
+	onSaveHtaccess,
+	onReloadWebServer,
 	isLoading,
 	runningAction,
 	onRunAction,
@@ -506,6 +645,13 @@ function SelfHostedSshManagementModal( {
 	status: SelfHostedSshManagementStatus | null;
 	advisories: SelfHostedSshAdvisory[] | null;
 	isLoadingAdvisories: boolean;
+	serverStack: SelfHostedServerStack | null;
+	phpVersions: SelfHostedPhpVersions | null;
+	htaccess: SelfHostedHtaccess | null;
+	isLoadingServer: boolean;
+	isSavingHtaccess: boolean;
+	onSaveHtaccess: ( content: string ) => void;
+	onReloadWebServer: () => void;
 	isLoading: boolean;
 	runningAction: string | null;
 	onRunAction: ( action: SelfHostedSshMaintenanceAction ) => void;
@@ -582,6 +728,16 @@ function SelfHostedSshManagementModal( {
 						<SelfHostedSshAdvisoriesPanel
 							advisories={ advisories }
 							isLoading={ isLoadingAdvisories }
+						/>
+						<SelfHostedServerPanel
+							connection={ connection }
+							serverStack={ serverStack }
+							phpVersions={ phpVersions }
+							htaccess={ htaccess }
+							isLoading={ isLoadingServer }
+							isSavingHtaccess={ isSavingHtaccess }
+							onSaveHtaccess={ onSaveHtaccess }
+							onReloadWebServer={ onReloadWebServer }
 						/>
 						<div className="flex flex-wrap gap-3">
 							<Button
@@ -1413,6 +1569,11 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 	const [ isLoadingManagementStatus, setIsLoadingManagementStatus ] = useState( false );
 	const [ advisories, setAdvisories ] = useState< SelfHostedSshAdvisory[] | null >( null );
 	const [ isLoadingAdvisories, setIsLoadingAdvisories ] = useState( false );
+	const [ serverStack, setServerStack ] = useState< SelfHostedServerStack | null >( null );
+	const [ phpVersions, setPhpVersions ] = useState< SelfHostedPhpVersions | null >( null );
+	const [ htaccess, setHtaccess ] = useState< SelfHostedHtaccess | null >( null );
+	const [ isLoadingServer, setIsLoadingServer ] = useState( false );
+	const [ isSavingHtaccess, setIsSavingHtaccess ] = useState( false );
 	const [ deploymentsConnection, setDeploymentsConnection ] =
 		useState< SelfHostedSyncConnection | null >( null );
 	const [ deployments, setDeployments ] = useState< SyncDeploymentRecord[] | null >( null );
@@ -1939,12 +2100,74 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 		}
 	};
 
+	const loadSelfHostedServerPanel = async ( connection: SelfHostedSshConnection ) => {
+		setIsLoadingServer( true );
+		try {
+			const [ stack, php, htaccessResult ] = await Promise.all( [
+				getIpcApi().detectSelfHostedServerStack( selectedSite.id, connection.id ),
+				getIpcApi().getSelfHostedPhpVersions( selectedSite.id, connection.id ),
+				getIpcApi().getSelfHostedHtaccess( selectedSite.id, connection.id ),
+			] );
+			setServerStack( stack );
+			setPhpVersions( php );
+			setHtaccess( htaccessResult );
+		} catch {
+			// Server-config detection is best-effort and must not block the management dashboard.
+			setServerStack( null );
+		} finally {
+			setIsLoadingServer( false );
+		}
+	};
+
+	const handleSaveSelfHostedHtaccess = async (
+		connection: SelfHostedSshConnection,
+		content: string
+	) => {
+		setIsSavingHtaccess( true );
+		try {
+			await getIpcApi().updateSelfHostedHtaccess( selectedSite.id, connection.id, content );
+			setHtaccess( await getIpcApi().getSelfHostedHtaccess( selectedSite.id, connection.id ) );
+			getIpcApi().showNotification( {
+				title: __( '.htaccess updated' ),
+				body: __( 'The remote .htaccess was validated and saved (a backup was kept).' ),
+			} );
+		} catch ( error ) {
+			getIpcApi().showErrorMessageBox( {
+				title: __( 'Failed to update .htaccess' ),
+				message: error instanceof Error ? error.message : __( 'Please try again.' ),
+			} );
+		} finally {
+			setIsSavingHtaccess( false );
+		}
+	};
+
+	const handleReloadSelfHostedWebServer = async ( connection: SelfHostedSshConnection ) => {
+		try {
+			const result = await getIpcApi().reloadSelfHostedWebServer( selectedSite.id, connection.id, {
+				reloadPhpFpm: true,
+			} );
+			getIpcApi().showNotification( {
+				title: __( 'Web server reloaded' ),
+				body: sprintf( __( 'Validated and reloaded %s.' ), result.webServer ),
+			} );
+		} catch ( error ) {
+			getIpcApi().showErrorMessageBox( {
+				title: __( 'Failed to reload the web server' ),
+				message: error instanceof Error ? error.message : __( 'Please try again.' ),
+			} );
+		}
+	};
+
 	const handleManageSelfHostedSshSite = ( connection: SelfHostedSshConnection ) => {
 		setManagementConnection( connection );
 		setManagementStatus( null );
 		setAdvisories( null );
+		setServerStack( null );
+		setPhpVersions( null );
+		setHtaccess( null );
 		void loadSelfHostedSshManagementStatus( connection );
 		void loadSelfHostedSshAdvisories( connection );
+		void loadSelfHostedServerPanel( connection );
 	};
 
 	const handleViewSelfHostedDeployments = async ( connection: SelfHostedSyncConnection ) => {
@@ -2417,6 +2640,15 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 					status={ managementStatus }
 					advisories={ advisories }
 					isLoadingAdvisories={ isLoadingAdvisories }
+					serverStack={ serverStack }
+					phpVersions={ phpVersions }
+					htaccess={ htaccess }
+					isLoadingServer={ isLoadingServer }
+					isSavingHtaccess={ isSavingHtaccess }
+					onSaveHtaccess={ ( content ) =>
+						void handleSaveSelfHostedHtaccess( managementConnection, content )
+					}
+					onReloadWebServer={ () => void handleReloadSelfHostedWebServer( managementConnection ) }
 					isLoading={ isLoadingManagementStatus }
 					runningAction={ runningMaintenanceAction }
 					onRequestClose={ () => {
