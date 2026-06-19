@@ -33,10 +33,14 @@ const focusConnectButton = () => {
 	connectButton?.focus();
 };
 
+type SelfHostedSshConnection = Extract< SyncConnection, { provider: 'self-hosted-ssh' } >;
+
 export function SyncSitesModalSelector( {
 	onRequestClose,
 	onConnect,
 	onSelfHostedSaved,
+	sshConnections = [],
+	onProvisionRequested,
 	selectedSite,
 	mode = 'connect',
 	allowWpcom = true,
@@ -44,6 +48,8 @@ export function SyncSitesModalSelector( {
 	onRequestClose: () => void;
 	onConnect: ( site: SyncSite ) => void;
 	onSelfHostedSaved?: ( connections: SyncConnection[] ) => void;
+	sshConnections?: SelfHostedSshConnection[];
+	onProvisionRequested?: ( connection: SelfHostedSshConnection ) => void;
 	selectedSite: SiteDetails;
 	mode?: SyncModalMode;
 	allowWpcom?: boolean;
@@ -51,9 +57,9 @@ export function SyncSitesModalSelector( {
 	const { __ } = useI18n();
 	const { user } = useAuth();
 	const [ selectedSiteId, setSelectedSiteId ] = useState< number | null >( null );
-	const [ connectionType, setConnectionType ] = useState< 'choose' | 'self-hosted' | 'wpcom' >(
-		mode === 'connect' ? 'choose' : 'wpcom'
-	);
+	const [ connectionType, setConnectionType ] = useState<
+		'choose' | 'self-hosted' | 'provision' | 'wpcom'
+	>( mode === 'connect' ? 'choose' : 'wpcom' );
 	const isOffline = useOffline();
 
 	const { data: connectedSites = [] } = useGetConnectedSitesForLocalSiteQuery( {
@@ -97,6 +103,7 @@ export function SyncSitesModalSelector( {
 					<ConnectionTypeChooser
 						allowWpcom={ allowWpcom }
 						onSelectSelfHosted={ () => setConnectionType( 'self-hosted' ) }
+						onSelectProvision={ () => setConnectionType( 'provision' ) }
 						onSelectWpcom={ () => setConnectionType( 'wpcom' ) }
 					/>
 				) }
@@ -107,6 +114,15 @@ export function SyncSitesModalSelector( {
 						onBack={ () => setConnectionType( 'choose' ) }
 						onRequestClose={ onRequestClose }
 						onSaved={ ( connections ) => onSelfHostedSaved?.( connections ) }
+					/>
+				) }
+
+				{ connectionType === 'provision' && (
+					<ProvisionTargetChooser
+						sshConnections={ sshConnections }
+						onBack={ () => setConnectionType( 'choose' ) }
+						onConnectFirst={ () => setConnectionType( 'self-hosted' ) }
+						onProvisionOn={ ( connection ) => onProvisionRequested?.( connection ) }
 					/>
 				) }
 
@@ -156,10 +172,12 @@ export function SyncSitesModalSelector( {
 function ConnectionTypeChooser( {
 	allowWpcom,
 	onSelectSelfHosted,
+	onSelectProvision,
 	onSelectWpcom,
 }: {
 	allowWpcom: boolean;
 	onSelectSelfHosted: () => void;
+	onSelectProvision: () => void;
 	onSelectWpcom: () => void;
 } ) {
 	const { __ } = useI18n();
@@ -179,11 +197,25 @@ function ConnectionTypeChooser( {
 						className="text-left rounded-md border border-frame-border bg-frame-surface p-5 hover:border-frame-theme focus:outline-none focus:ring-2 focus:ring-frame-theme"
 					>
 						<div className="text-sm font-medium text-frame-text">
-							{ __( 'Self-hosted WordPress' ) }
+							{ __( 'Connect an existing self-hosted site' ) }
 						</div>
 						<p className="text-sm text-frame-text-secondary mt-2">
 							{ __(
 								'Connect a site by URL, then choose REST API content sync, SSH + WP-CLI, or connector plugin sync.'
+							) }
+						</p>
+					</button>
+					<button
+						type="button"
+						onClick={ onSelectProvision }
+						className="text-left rounded-md border border-frame-border bg-frame-surface p-5 hover:border-frame-theme focus:outline-none focus:ring-2 focus:ring-frame-theme"
+					>
+						<div className="text-sm font-medium text-frame-text">
+							{ __( 'Provision a new site' ) }
+						</div>
+						<p className="text-sm text-frame-text-secondary mt-2">
+							{ __(
+								'Install a fresh WordPress site on a server you can reach over SSH (web server, PHP, and database must already be installed).'
 							) }
 						</p>
 					</button>
@@ -208,6 +240,75 @@ function ConnectionTypeChooser( {
 						</p>
 					</button>
 				</div>
+			</div>
+		</div>
+	);
+}
+
+function ProvisionTargetChooser( {
+	sshConnections,
+	onBack,
+	onConnectFirst,
+	onProvisionOn,
+}: {
+	sshConnections: SelfHostedSshConnection[];
+	onBack: () => void;
+	onConnectFirst: () => void;
+	onProvisionOn: ( connection: SelfHostedSshConnection ) => void;
+} ) {
+	const { __ } = useI18n();
+
+	return (
+		<div className="flex-1 overflow-y-auto px-8 py-8">
+			<div className="max-w-3xl mx-auto flex flex-col gap-4">
+				<div>
+					<Button variant="link" className="!p-0" onClick={ onBack }>
+						{ __( 'Back to site types' ) }
+					</Button>
+					<h3 className="text-base font-medium text-frame-text mt-3">
+						{ __( 'Provision a new WordPress site' ) }
+					</h3>
+					<p className="text-sm text-frame-text-secondary mt-2">
+						{ __(
+							'Choose an SSH-connected server to install the new site on. Studio creates the database, virtual host, and a fresh WordPress install.'
+						) }
+					</p>
+				</div>
+
+				{ sshConnections.length === 0 ? (
+					<div className="rounded-md border border-frame-border bg-frame-surface p-5">
+						<div className="text-sm text-frame-text">{ __( 'No SSH-connected servers yet.' ) }</div>
+						<p className="text-sm text-frame-text-secondary mt-2">
+							{ __(
+								'Connect a self-hosted site over SSH + WP-CLI first; you can then provision new sites on that server.'
+							) }
+						</p>
+						<Button variant="secondary" className="mt-3" onClick={ onConnectFirst }>
+							{ __( 'Connect an SSH server' ) }
+						</Button>
+					</div>
+				) : (
+					<div className="flex flex-col gap-3">
+						{ sshConnections.map( ( connection ) => (
+							<button
+								key={ connection.id }
+								type="button"
+								onClick={ () => onProvisionOn( connection ) }
+								className="text-left rounded-md border border-frame-border bg-frame-surface p-4 hover:border-frame-theme focus:outline-none focus:ring-2 focus:ring-frame-theme flex items-center justify-between gap-3"
+							>
+								<div className="min-w-0">
+									<div className="text-sm font-medium text-frame-text truncate">
+										{ connection.siteUrl }
+									</div>
+									<div className="text-xs text-frame-text-secondary">
+										{ connection.environmentType }
+									</div>
+								</div>
+								<ArrowIcon />
+							</button>
+						) ) }
+					</div>
+				) }
 			</div>
 		</div>
 	);

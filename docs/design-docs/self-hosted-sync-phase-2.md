@@ -86,8 +86,11 @@ package installs).
       then uses the existing SSH push flow.)
 
 ### 8.4 Add-site & connection UX — done
-- [x] "Connect existing vs provision new" is satisfied: connect a self-hosted SSH connection, then
-      "Provision site" from its card (8.3). A unified add-site wizard step is a future polish.
+- [x] Unified add-site entry point: the connect modal's site-type chooser now offers three
+      first-class choices — "Connect an existing self-hosted site", "Provision a new site", and
+      "WordPress.com / Pressable". The provision path lets the user pick an SSH-connected server (or
+      guides them to connect one first) and opens the provisioning form. Provision-from-card still
+      works too. Test-covered (`sync-sites-modal-selector.test.tsx`).
 - [x] Persist server capabilities (`sync-server-capabilities.ts`): `detectSelfHostedServerStack`
       caches the detected stack in app data; `getCachedSelfHostedServerStack` returns it instantly so
       the Server panel shows capabilities before the fresh probe completes; cache is cleared when the

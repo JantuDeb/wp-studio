@@ -2953,6 +2953,14 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 						await handleSiteSelection( site );
 					} }
 					onSelfHostedSaved={ setSyncConnections }
+					sshConnections={ syncConnections.filter(
+						( connection ): connection is SelfHostedSshConnection =>
+							connection.provider === 'self-hosted-ssh'
+					) }
+					onProvisionRequested={ ( connection ) => {
+						dispatch( connectedSitesActions.closeModal() );
+						setProvisionConnection( connection );
+					} }
 					selectedSite={ selectedSite }
 					allowWpcom={ isAuthenticated }
 				/>

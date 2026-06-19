@@ -127,10 +127,64 @@ describe( 'SyncSitesModalSelector', () => {
 			/>
 		);
 
-		fireEvent.click( screen.getByText( 'Self-hosted WordPress' ) );
+		fireEvent.click( screen.getByText( 'Connect an existing self-hosted site' ) );
 
 		expect( await screen.findByLabelText( 'Site URL' ) ).toBeInTheDocument();
 		expect( screen.getByLabelText( 'Environment type' ) ).toBeInTheDocument();
 		expect( screen.getByLabelText( 'Sync mode' ) ).toBeInTheDocument();
+	} );
+
+	it( 'guides to connect an SSH server when provisioning with no SSH connections', async () => {
+		renderWithProvider(
+			<SyncSitesModalSelector
+				onRequestClose={ vi.fn() }
+				onConnect={ vi.fn() }
+				selectedSite={ selectedSite }
+			/>
+		);
+
+		fireEvent.click( screen.getByText( 'Provision a new site' ) );
+
+		expect( await screen.findByText( 'No SSH-connected servers yet.' ) ).toBeInTheDocument();
+		expect( screen.getByText( 'Connect an SSH server' ) ).toBeInTheDocument();
+	} );
+
+	it( 'requests provisioning on a chosen SSH connection', async () => {
+		const onProvisionRequested = vi.fn();
+		const sshConnection = {
+			id: 'conn-ssh',
+			localSiteId: selectedSite.id,
+			provider: 'self-hosted-ssh' as const,
+			syncMode: 'ssh-wp-cli' as const,
+			siteUrl: 'https://staging.example.com',
+			environmentType: 'staging' as const,
+			lastPullTimestamp: null,
+			lastPushTimestamp: null,
+			capabilities: {
+				canPull: true,
+				canPush: true,
+				canPushToProduction: false,
+				canSyncContent: true,
+				canSyncDatabase: true,
+				canSyncFiles: true,
+				requiresBackupBeforePush: true,
+				requiresDryRunBeforeProductionPush: true,
+			},
+		};
+
+		renderWithProvider(
+			<SyncSitesModalSelector
+				onRequestClose={ vi.fn() }
+				onConnect={ vi.fn() }
+				onProvisionRequested={ onProvisionRequested }
+				sshConnections={ [ sshConnection ] }
+				selectedSite={ selectedSite }
+			/>
+		);
+
+		fireEvent.click( screen.getByText( 'Provision a new site' ) );
+		fireEvent.click( await screen.findByText( 'https://staging.example.com' ) );
+
+		expect( onProvisionRequested ).toHaveBeenCalledWith( sshConnection );
 	} );
 } );
