@@ -431,6 +431,8 @@ export const selfHostedProvisionResultSchema = z.object( {
 	url: z.string(),
 	vhostPath: z.string(),
 	wpVersion: z.string(),
+	// The new SSH sync connection auto-created for the provisioned site.
+	connectionId: z.string(),
 } );
 export type SelfHostedProvisionResult = z.infer< typeof selfHostedProvisionResultSchema >;
 

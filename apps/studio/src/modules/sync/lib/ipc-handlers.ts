@@ -2034,12 +2034,46 @@ export async function provisionSelfHostedSite(
 				} )
 		);
 
+		// 4) Register the provisioned site as a new SSH sync connection so it is immediately usable
+		// as a sync target. It reuses the SSH transport credentials of the connection we provisioned
+		// from, but points at the new site's URL and document root. A freshly provisioned site is
+		// treated as development (never production), so push/pull are enabled.
+		const newConnectionId = randomUUID();
+		const provisionedConnection: SyncConnection = {
+			id: newConnectionId,
+			localSiteId,
+			provider: 'self-hosted-ssh',
+			syncMode: 'ssh-wp-cli',
+			siteUrl: url,
+			environmentType: 'development',
+			lastPullTimestamp: null,
+			lastPushTimestamp: null,
+			capabilities: {
+				canPull: true,
+				canPush: true,
+				canPushToProduction: false,
+				canSyncContent: true,
+				canSyncDatabase: true,
+				canSyncFiles: true,
+				requiresBackupBeforePush: true,
+				requiresDryRunBeforeProductionPush: true,
+			},
+			createdAt: new Date().toISOString(),
+			auth: { ...parsed.auth, remoteWordPressPath: docroot },
+		};
+		await saveSyncConnectionCredentials( localSiteId, provisionedConnection );
+		await addOrUpdateSyncConnection(
+			localSiteId,
+			stripSyncConnectionAuth( provisionedConnection )
+		);
+
 		return {
 			domain,
 			docroot,
 			url,
 			vhostPath: vhost.path,
 			wpVersion: versionOutput.trim().split( '\n' ).pop() || '',
+			connectionId: newConnectionId,
 		};
 	} finally {
 		client.end();

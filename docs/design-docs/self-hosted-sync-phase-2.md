@@ -79,8 +79,11 @@ package installs).
       (never in a command string); typed `PROVISION` confirmation; prod-gated.
 - [x] Renderer UI: a "Provision site" form modal launched from SSH connection cards.
 - [x] Unit tests for validators, vhost templates, secret-export prefix, and command builders.
-- [ ] Auto-add the provisioned site as a sync target + push a local site into it (follow-up; the
-      operator can connect to it as a normal SSH target today).
+- [x] Auto-add the provisioned site as a sync target: provisioning now creates a new
+      `self-hosted-ssh` connection (reusing the SSH transport credentials, pointed at the new URL +
+      docroot, environment `development`) and returns its `connectionId`. The renderer refreshes the
+      connection list so the site is immediately usable for push/pull. (Pushing a local site into it
+      then uses the existing SSH push flow.)
 
 ### 8.4 Add-site & connection UX — done
 - [x] "Connect existing vs provision new" is satisfied: connect a self-hosted SSH connection, then

@@ -2567,11 +2567,14 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 				'PROVISION'
 			);
 			setProvisionConnection( null );
+			// The provisioned site was auto-added as a new SSH connection; refresh the list so it
+			// appears immediately as a sync target.
+			setSyncConnections( await getIpcApi().getSyncConnections( selectedSite.id ) );
 			getIpcApi().showNotification( {
 				title: __( 'Site provisioned' ),
 				body: sprintf(
 					/* translators: %1$s site URL, %2$s WordPress version. */
-					__( 'WordPress %2$s is now installed at %1$s.' ),
+					__( 'WordPress %2$s is now installed at %1$s and added as a sync target.' ),
 					result.url,
 					result.wpVersion
 				),
