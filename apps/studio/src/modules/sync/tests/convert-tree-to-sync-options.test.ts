@@ -4,6 +4,8 @@ import {
 	selfHostedSshVerificationSchema,
 	selfHostedSshManagementStatusSchema,
 	selfHostedSshMaintenanceActionSchema,
+	selfHostedSshDebugLogSchema,
+	selfHostedSshIncrementalPreviewSchema,
 } from '@studio/common/types/sync';
 import { describe, expect, it } from 'vitest';
 import { TreeNode } from 'src/components/tree-view';
@@ -245,6 +247,11 @@ describe( 'selfHostedSshManagementStatusSchema', () => {
 				dueCronEvents: 2,
 				debugLogExists: true,
 				debugLogSizeInBytes: 2048,
+				recentFatalErrorCount: 1,
+				httpStatus: 200,
+				httpResponseTimeMs: 120,
+				availableDiskSpaceInBytes: 10_000,
+				wordpressDiskUsageInBytes: 5_000,
 			} )
 		).toMatchObject( {
 			dueCronEvents: 2,
@@ -259,5 +266,36 @@ describe( 'selfHostedSshManagementStatusSchema', () => {
 				name: '../example',
 			} )
 		).toThrow();
+	} );
+
+	it( 'accepts bulk extension maintenance actions', () => {
+		expect(
+			selfHostedSshMaintenanceActionSchema.parse( {
+				action: 'update-extensions',
+				plugins: [ 'akismet' ],
+				themes: [ 'twentytwentyfive' ],
+			} )
+		).toMatchObject( { action: 'update-extensions' } );
+	} );
+} );
+
+describe( 'SSH operational schemas', () => {
+	it( 'accepts debug-log and incremental preview data', () => {
+		expect(
+			selfHostedSshDebugLogSchema.parse( {
+				content: 'PHP Fatal error',
+				sizeInBytes: 15,
+				lines: 1,
+				fatalErrorCount: 1,
+			} )
+		).toMatchObject( { fatalErrorCount: 1 } );
+		expect(
+			selfHostedSshIncrementalPreviewSchema.parse( {
+				changed: [ 'plugins/example/file.php' ],
+				localOnly: [],
+				remoteOnly: [ 'uploads/old.jpg' ],
+				unchangedCount: 10,
+			} )
+		).toMatchObject( { unchangedCount: 10 } );
 	} );
 } );

@@ -312,3 +312,63 @@ Still pending:
 - [ ] Electron UI integration coverage for the complete connection wizard and sync dialogs.
 - [ ] Public-key authentication fixture.
 - [ ] Failure-injection cases for interrupted upload, disk exhaustion, and failed rollback.
+
+## Extended Site Management Addendum
+
+The SSH management surface now covers logs, monitoring, bulk maintenance, core updates, and incremental files.
+
+Included:
+
+- [x] View the latest 500 remote debug-log lines.
+- [x] Highlight fatal PHP errors and show total log size/line/fatal counts.
+- [x] Download the complete remote debug log.
+- [x] Clear the log after explicit confirmation.
+- [x] HTTP status and response-time monitoring.
+- [x] WordPress directory usage and available filesystem space.
+- [x] Bulk plugin/theme selection with one scoped pre-update backup.
+- [x] Sequential component updates with verification and automatic rollback.
+- [x] Guarded WordPress core update and database upgrade for staging/development.
+- [x] Restore the previous core/database state when verification fails.
+- [x] Hash-based local/remote `wp-content` comparison.
+- [x] Preview changed, local-only, remote-only, and unchanged files.
+- [x] Upload changed files and delete remote-only files after a scoped backup.
+- [x] Exclude Studio database integration, caches, logs, Git data, and dependencies from incremental sync.
+- [x] Production incremental file sync remains disabled.
+
+## Connector Plugin Protocol Addendum
+
+Studio now implements the desktop side of a connector-plugin transport for shared hosts without SSH.
+
+Required authenticated endpoints under `/wp-json/studio-connector/v1/`:
+
+- `GET status` returns plugin/WordPress versions and export/restore capabilities.
+- `POST exports` creates an archive and returns `download_url`.
+- `POST archives` accepts an `application/gzip` archive and returns `archive_id`.
+- `POST archives/{archive_id}/restore` creates a remote backup and restores requested parts.
+
+Included:
+
+- [x] Bearer-token connection testing and capability discovery.
+- [x] Remote full archive export/download and local Studio import.
+- [x] Local full export, connector upload, backup-required restore, and URL metadata.
+- [x] Staging/development connector push.
+- [x] Production connector full-site push blocked in the main process and UI.
+
+The WordPress connector plugin itself remains a separately deployable component and must implement this contract securely.
+
+## Production Content Deployment Addendum
+
+Production deployment remains content-first.
+
+Included:
+
+- [x] REST posts/pages/media/terms are the only production push path.
+- [x] Production content pushes default to drafts.
+- [x] Existing conflict preview remains mandatory before writing.
+- [x] Immediate production publishing requires typing `PUBLISH`.
+- [x] SSH and connector database/file pushes remain disabled for production.
+
+Still pending:
+
+- [ ] Scheduled production publishing.
+- [ ] Editorial approval roles and deployment audit history.

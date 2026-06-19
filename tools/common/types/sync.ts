@@ -349,12 +349,18 @@ export const selfHostedSshManagementStatusSchema = z.object( {
 	dueCronEvents: z.number().int().nonnegative(),
 	debugLogExists: z.boolean(),
 	debugLogSizeInBytes: z.number().nonnegative(),
+	recentFatalErrorCount: z.number().int().nonnegative(),
+	httpStatus: z.number().int().nonnegative().nullable(),
+	httpResponseTimeMs: z.number().int().nonnegative().nullable(),
+	availableDiskSpaceInBytes: z.number().nonnegative(),
+	wordpressDiskUsageInBytes: z.number().nonnegative(),
 } );
 export type SelfHostedSshManagementStatus = z.infer< typeof selfHostedSshManagementStatusSchema >;
 
 export const selfHostedSshMaintenanceActionSchema = z.discriminatedUnion( 'action', [
 	z.object( { action: z.literal( 'flush-cache' ) } ),
 	z.object( { action: z.literal( 'run-cron' ) } ),
+	z.object( { action: z.literal( 'clear-debug-log' ) } ),
 	z.object( {
 		action: z.literal( 'update-plugin' ),
 		name: z.string().regex( /^[a-zA-Z0-9._-]+$/ ),
@@ -363,5 +369,29 @@ export const selfHostedSshMaintenanceActionSchema = z.discriminatedUnion( 'actio
 		action: z.literal( 'update-theme' ),
 		name: z.string().regex( /^[a-zA-Z0-9._-]+$/ ),
 	} ),
+	z.object( {
+		action: z.literal( 'update-extensions' ),
+		plugins: z.array( z.string().regex( /^[a-zA-Z0-9._-]+$/ ) ),
+		themes: z.array( z.string().regex( /^[a-zA-Z0-9._-]+$/ ) ),
+	} ),
+	z.object( { action: z.literal( 'update-core' ) } ),
 ] );
 export type SelfHostedSshMaintenanceAction = z.infer< typeof selfHostedSshMaintenanceActionSchema >;
+
+export const selfHostedSshDebugLogSchema = z.object( {
+	content: z.string(),
+	sizeInBytes: z.number().nonnegative(),
+	lines: z.number().int().nonnegative(),
+	fatalErrorCount: z.number().int().nonnegative(),
+} );
+export type SelfHostedSshDebugLog = z.infer< typeof selfHostedSshDebugLogSchema >;
+
+export const selfHostedSshIncrementalPreviewSchema = z.object( {
+	changed: z.array( z.string() ),
+	localOnly: z.array( z.string() ),
+	remoteOnly: z.array( z.string() ),
+	unchangedCount: z.number().int().nonnegative(),
+} );
+export type SelfHostedSshIncrementalPreview = z.infer<
+	typeof selfHostedSshIncrementalPreviewSchema
+>;

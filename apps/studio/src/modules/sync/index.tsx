@@ -10,6 +10,7 @@ import { IllustrationGrid } from 'src/components/illustration-grid';
 import Modal from 'src/components/modal';
 import offlineIcon from 'src/components/offline-icon';
 import ProgressBar from 'src/components/progress-bar';
+import TextControl from 'src/components/text-control';
 import { Tooltip } from 'src/components/tooltip';
 import { useAuth } from 'src/hooks/use-auth';
 import { useOffline } from 'src/hooks/use-offline';
@@ -42,6 +43,8 @@ import type {
 	SelfHostedSshProgress,
 	SelfHostedSshManagementStatus,
 	SelfHostedSshMaintenanceAction,
+	SelfHostedSshDebugLog,
+	SelfHostedSshIncrementalPreview,
 	SyncConnection,
 	SyncSite,
 } from '@studio/common/types/sync';
@@ -184,6 +187,8 @@ function SelfHostedConnectionsList( {
 	onPushSshSite,
 	onManageSshBackups,
 	onManageSshSite,
+	onPullConnectorSite,
+	onPushConnectorSite,
 	pushingConnectionId,
 	preflightingConnectionId,
 	pullingConnectionId,
@@ -197,6 +202,8 @@ function SelfHostedConnectionsList( {
 	onPushSshSite: ( connection: SelfHostedSyncConnection ) => void;
 	onManageSshBackups: ( connection: SelfHostedSyncConnection ) => void;
 	onManageSshSite: ( connection: SelfHostedSyncConnection ) => void;
+	onPullConnectorSite: ( connection: SelfHostedSyncConnection ) => void;
+	onPushConnectorSite: ( connection: SelfHostedSyncConnection ) => void;
 	pushingConnectionId: string | null;
 	preflightingConnectionId: string | null;
 	pullingConnectionId: string | null;
@@ -263,6 +270,31 @@ function SelfHostedConnectionsList( {
 							>
 								{ pullingConnectionId === connection.id ? __( 'Pulling…' ) : __( 'Pull to local' ) }
 							</Button>
+							{ connection.provider === 'self-hosted-connector' && (
+								<>
+									<Button
+										variant="secondary"
+										disabled={ pullingConnectionId === connection.id }
+										onClick={ () => onPullConnectorSite( connection ) }
+									>
+										{ pullingConnectionId === connection.id
+											? __( 'Pulling…' )
+											: __( 'Pull to local' ) }
+									</Button>
+									<Button
+										variant="secondary"
+										disabled={
+											connection.environmentType === 'production' ||
+											pushingConnectionId === connection.id
+										}
+										onClick={ () => onPushConnectorSite( connection ) }
+									>
+										{ pushingConnectionId === connection.id
+											? __( 'Pushing…' )
+											: __( 'Push to remote' ) }
+									</Button>
+								</>
+							) }
 							<Button
 								variant="secondary"
 								disabled={
@@ -317,6 +349,9 @@ function SelfHostedSshManagementModal( {
 	isLoading,
 	runningAction,
 	onRunAction,
+	onViewDebugLog,
+	onDownloadDebugLog,
+	onCompareFiles,
 	onRefresh,
 	onRequestClose,
 }: {
@@ -325,6 +360,9 @@ function SelfHostedSshManagementModal( {
 	isLoading: boolean;
 	runningAction: string | null;
 	onRunAction: ( action: SelfHostedSshMaintenanceAction ) => void;
+	onViewDebugLog: () => void;
+	onDownloadDebugLog: () => void;
+	onCompareFiles: () => void;
 	onRefresh: () => void;
 	onRequestClose: () => void;
 } ) {
@@ -332,6 +370,14 @@ function SelfHostedSshManagementModal( {
 	const pluginUpdates = status?.plugins.filter( ( plugin ) => plugin.updateVersion ) ?? [];
 	const themeUpdates = status?.themes.filter( ( theme ) => theme.updateVersion ) ?? [];
 	const canUpdate = connection.environmentType !== 'production';
+	const [ selectedPlugins, setSelectedPlugins ] = useState< Set< string > >( new Set() );
+	const [ selectedThemes, setSelectedThemes ] = useState< Set< string > >( new Set() );
+	const selectedUpdateCount = selectedPlugins.size + selectedThemes.size;
+
+	useEffect( () => {
+		setSelectedPlugins( new Set() );
+		setSelectedThemes( new Set() );
+	}, [ connection.id, status ] );
 
 	return (
 		<Modal
@@ -365,6 +411,18 @@ function SelfHostedSshManagementModal( {
 										? formatBackupSize( status.debugLogSizeInBytes )
 										: __( 'Not found' ),
 								],
+								[
+									__( 'HTTP status' ),
+									status.httpStatus ? String( status.httpStatus ) : __( 'Unavailable' ),
+								],
+								[
+									__( 'Response time' ),
+									status.httpResponseTimeMs !== null
+										? `${ status.httpResponseTimeMs } ms`
+										: __( 'Unavailable' ),
+								],
+								[ __( 'Site disk usage' ), formatBackupSize( status.wordpressDiskUsageInBytes ) ],
+								[ __( 'Free disk space' ), formatBackupSize( status.availableDiskSpaceInBytes ) ],
 							].map( ( [ label, value ] ) => (
 								<div key={ label } className="border border-frame-border rounded-sm p-3">
 									<div className="text-xs text-frame-text-secondary">{ label }</div>
@@ -389,12 +447,66 @@ function SelfHostedSshManagementModal( {
 							</Button>
 							<Button
 								variant="secondary"
+								disabled={ Boolean( runningAction ) || ! status.debugLogExists }
+								onClick={ onViewDebugLog }
+							>
+								{ status.recentFatalErrorCount > 0
+									? sprintf( __( 'View debug log (%d fatal)' ), status.recentFatalErrorCount )
+									: __( 'View debug log' ) }
+							</Button>
+							<Button
+								variant="secondary"
+								disabled={ Boolean( runningAction ) || ! status.debugLogExists }
+								onClick={ onDownloadDebugLog }
+							>
+								{ __( 'Download log' ) }
+							</Button>
+							<Button
+								variant="secondary"
 								disabled={ Boolean( runningAction ) }
 								onClick={ onRefresh }
 							>
 								{ __( 'Refresh' ) }
 							</Button>
+							<Button
+								variant="secondary"
+								disabled={ ! canUpdate || Boolean( runningAction ) }
+								onClick={ onCompareFiles }
+							>
+								{ __( 'Compare files' ) }
+							</Button>
+							<Button
+								variant="secondary"
+								disabled={ ! canUpdate || Boolean( runningAction ) }
+								onClick={ () => onRunAction( { action: 'update-core' } ) }
+							>
+								{ runningAction === 'update-core'
+									? __( 'Updating core…' )
+									: __( 'Update WordPress core' ) }
+							</Button>
 						</div>
+						{ selectedUpdateCount > 0 && (
+							<div className="flex items-center justify-between gap-4 border border-frame-border rounded-sm p-3">
+								<div className="text-sm text-frame-text">
+									{ sprintf( __( '%d updates selected' ), selectedUpdateCount ) }
+								</div>
+								<Button
+									variant="primary"
+									disabled={ ! canUpdate || Boolean( runningAction ) }
+									onClick={ () =>
+										onRunAction( {
+											action: 'update-extensions',
+											plugins: [ ...selectedPlugins ],
+											themes: [ ...selectedThemes ],
+										} )
+									}
+								>
+									{ runningAction === 'update-extensions'
+										? __( 'Updating selected…' )
+										: __( 'Back up and update selected' ) }
+								</Button>
+							</div>
+						) }
 						<div>
 							<h3 className="text-sm font-medium text-frame-text mb-2">
 								{ sprintf( __( 'Plugin updates (%d)' ), pluginUpdates.length ) }
@@ -410,6 +522,22 @@ function SelfHostedSshManagementModal( {
 											key={ plugin.name }
 											className="flex items-center justify-between gap-3 border-b border-frame-border last:border-b-0 p-3"
 										>
+											<CheckboxControl
+												checked={ selectedPlugins.has( plugin.name ) }
+												disabled={ ! canUpdate || Boolean( runningAction ) }
+												onChange={ ( checked ) =>
+													setSelectedPlugins( ( current ) => {
+														const next = new Set( current );
+														if ( checked ) {
+															next.add( plugin.name );
+														} else {
+															next.delete( plugin.name );
+														}
+														return next;
+													} )
+												}
+												__nextHasNoMarginBottom
+											/>
 											<div className="min-w-0">
 												<div className="text-sm text-frame-text truncate">{ plugin.title }</div>
 												<div className="text-xs text-frame-text-secondary">
@@ -447,6 +575,22 @@ function SelfHostedSshManagementModal( {
 											key={ theme.name }
 											className="flex items-center justify-between gap-3 border-b border-frame-border last:border-b-0 p-3"
 										>
+											<CheckboxControl
+												checked={ selectedThemes.has( theme.name ) }
+												disabled={ ! canUpdate || Boolean( runningAction ) }
+												onChange={ ( checked ) =>
+													setSelectedThemes( ( current ) => {
+														const next = new Set( current );
+														if ( checked ) {
+															next.add( theme.name );
+														} else {
+															next.delete( theme.name );
+														}
+														return next;
+													} )
+												}
+												__nextHasNoMarginBottom
+											/>
 											<div className="min-w-0">
 												<div className="text-sm text-frame-text truncate">{ theme.title }</div>
 												<div className="text-xs text-frame-text-secondary">
@@ -473,6 +617,184 @@ function SelfHostedSshManagementModal( {
 				) }
 				<div className="flex justify-end mt-5">
 					<Button variant="link" onClick={ onRequestClose } disabled={ Boolean( runningAction ) }>
+						{ __( 'Close' ) }
+					</Button>
+				</div>
+			</div>
+		</Modal>
+	);
+}
+
+function SelfHostedSshIncrementalSyncModal( {
+	preview,
+	isLoading,
+	isApplying,
+	onApply,
+	onRequestClose,
+}: {
+	preview: SelfHostedSshIncrementalPreview | null;
+	isLoading: boolean;
+	isApplying: boolean;
+	onApply: () => void;
+	onRequestClose: () => void;
+} ) {
+	const { __ } = useI18n();
+	const totalChanges = preview
+		? preview.changed.length + preview.localOnly.length + preview.remoteOnly.length
+		: 0;
+
+	const renderPaths = ( title: string, paths: string[] ) => (
+		<div>
+			<h3 className="text-sm font-medium text-frame-text mb-2">
+				{ title } ({ paths.length })
+			</h3>
+			<div className="max-h-36 overflow-y-auto border border-frame-border rounded-sm">
+				{ paths.length === 0 ? (
+					<div className="p-3 text-sm text-frame-text-secondary">{ __( 'None' ) }</div>
+				) : (
+					paths.map( ( filePath ) => (
+						<div
+							key={ filePath }
+							className="px-3 py-2 border-b border-frame-border last:border-b-0 font-mono text-xs text-frame-text"
+						>
+							{ filePath }
+						</div>
+					) )
+				) }
+			</div>
+		</div>
+	);
+
+	return (
+		<Modal
+			className="w-[90%] max-w-[820px] max-h-[86vh] [&>div]:!p-0"
+			onRequestClose={ onRequestClose }
+			title={ __( 'Incremental file sync' ) }
+		>
+			<div className="px-8 pb-6">
+				<Notice status="warning" isDismissible={ false } className="mb-4">
+					{ __(
+						'Applying this comparison uploads changed and local-only files and deletes remote-only files. Studio creates a scoped backup first.'
+					) }
+				</Notice>
+				{ isLoading || ! preview ? (
+					<div className="flex items-center gap-2 py-8 text-frame-text-secondary">
+						<Spinner className="!m-0 [&>circle]:stroke-frame-text-secondary" />
+						{ __( 'Comparing local and remote file hashes…' ) }
+					</div>
+				) : (
+					<div className="flex flex-col gap-5">
+						<div className="text-sm text-frame-text-secondary">
+							{ sprintf(
+								__( '%1$d changes found; %2$d files are unchanged.' ),
+								totalChanges,
+								preview.unchangedCount
+							) }
+						</div>
+						{ renderPaths( __( 'Changed files' ), preview.changed ) }
+						{ renderPaths( __( 'Local-only files to upload' ), preview.localOnly ) }
+						{ renderPaths( __( 'Remote-only files to delete' ), preview.remoteOnly ) }
+					</div>
+				) }
+				<div className="flex justify-end gap-4 mt-5">
+					<Button variant="link" onClick={ onRequestClose } disabled={ isApplying }>
+						{ __( 'Close' ) }
+					</Button>
+					<Button
+						variant="primary"
+						disabled={ isLoading || isApplying || totalChanges === 0 }
+						onClick={ onApply }
+					>
+						{ isApplying ? __( 'Applying…' ) : __( 'Back up and apply changes' ) }
+					</Button>
+				</div>
+			</div>
+		</Modal>
+	);
+}
+
+function SelfHostedSshDebugLogModal( {
+	log,
+	isLoading,
+	isClearing,
+	onRefresh,
+	onClear,
+	onDownload,
+	onRequestClose,
+}: {
+	log: SelfHostedSshDebugLog | null;
+	isLoading: boolean;
+	isClearing: boolean;
+	onRefresh: () => void;
+	onClear: () => void;
+	onDownload: () => void;
+	onRequestClose: () => void;
+} ) {
+	const { __ } = useI18n();
+	const lines = log?.content.split( '\n' ) ?? [];
+
+	return (
+		<Modal
+			className="w-[92%] max-w-[980px] h-full max-h-[86vh] [&>div]:!p-0 [&_[role=document]]:flex [&_[role=document]]:flex-col"
+			onRequestClose={ onRequestClose }
+			title={ __( 'Remote debug log' ) }
+		>
+			<div className="flex flex-col min-h-0 flex-1">
+				<div className="flex items-center justify-between gap-4 px-8 py-4 border-b border-frame-border">
+					<div className="text-sm text-frame-text-secondary">
+						{ log
+							? sprintf(
+									__( '%1$d lines · %2$s · %3$d fatal errors' ),
+									log.lines,
+									formatBackupSize( log.sizeInBytes ),
+									log.fatalErrorCount
+							  )
+							: __( 'Loading log details…' ) }
+					</div>
+					<div className="flex gap-3">
+						<Button variant="secondary" disabled={ isLoading || isClearing } onClick={ onRefresh }>
+							{ __( 'Refresh' ) }
+						</Button>
+						<Button
+							variant="secondary"
+							disabled={ isLoading || isClearing || ! log?.content }
+							onClick={ onDownload }
+						>
+							{ __( 'Download' ) }
+						</Button>
+						<Button
+							variant="secondary"
+							disabled={ isLoading || isClearing || ! log?.content }
+							onClick={ onClear }
+						>
+							{ isClearing ? __( 'Clearing…' ) : __( 'Clear log' ) }
+						</Button>
+					</div>
+				</div>
+				<div className="flex-1 min-h-0 overflow-auto bg-frame-surface p-5 font-mono text-xs leading-5">
+					{ isLoading ? (
+						<div className="flex items-center gap-2 text-frame-text-secondary">
+							<Spinner className="!m-0 [&>circle]:stroke-frame-text-secondary" />
+							{ __( 'Loading remote debug log…' ) }
+						</div>
+					) : lines.length === 0 || ! log?.content ? (
+						<div className="text-frame-text-secondary">{ __( 'The debug log is empty.' ) }</div>
+					) : (
+						lines.map( ( line, index ) => {
+							const isFatal = /PHP Fatal error|Uncaught Error|Uncaught Exception/i.test( line );
+							return (
+								<div
+									key={ `${ index }:${ line.slice( 0, 30 ) }` }
+									className={ isFatal ? 'text-frame-error' : 'text-frame-text' }
+								>
+									{ line || ' ' }
+								</div>
+							);
+						} )
+					) }
+				</div>
+				<div className="flex justify-end px-8 py-4 border-t border-frame-border">
+					<Button variant="link" onClick={ onRequestClose } disabled={ isClearing }>
 						{ __( 'Close' ) }
 					</Button>
 				</div>
@@ -618,6 +940,7 @@ function ContentPushPickerModal( {
 	onRequestClose,
 	onPreview,
 	onPush,
+	isProduction,
 }: {
 	items: ContentSelectionItem[];
 	isLoading: boolean;
@@ -626,10 +949,13 @@ function ContentPushPickerModal( {
 	preview: ContentPushPreview | null;
 	onRequestClose: () => void;
 	onPreview: ( selectedItems: SelectedContentItem[] ) => void;
-	onPush: ( selectedItems: SelectedContentItem[] ) => void;
+	onPush: ( selectedItems: SelectedContentItem[], publish: boolean ) => void;
+	isProduction: boolean;
 } ) {
 	const { __ } = useI18n();
 	const [ selectedKeys, setSelectedKeys ] = useState< Set< string > >( new Set() );
+	const [ publish, setPublish ] = useState( false );
+	const [ confirmation, setConfirmation ] = useState( '' );
 
 	useEffect( () => {
 		setSelectedKeys( new Set( items.map( ( item ) => `${ item.type }:${ item.id }` ) ) );
@@ -659,6 +985,8 @@ function ContentPushPickerModal( {
 		.join( ',' );
 	const hasPreviewForSelection = Boolean( preview ) && previewKeyList === selectedKeyList;
 	const hasConflicts = hasPreviewForSelection && Boolean( preview?.summary.conflict );
+	const requiresPublishConfirmation = isProduction && publish;
+	const hasPublishConfirmation = ! requiresPublishConfirmation || confirmation.trim() === 'PUBLISH';
 
 	const handlePreview = () => {
 		onPreview( selectedItems );
@@ -766,6 +1094,28 @@ function ContentPushPickerModal( {
 						</div>
 					</div>
 				) }
+				<div className="px-8 py-4 border-t border-frame-border">
+					<CheckboxControl
+						label={ __( 'Publish selected content immediately' ) }
+						checked={ publish }
+						onChange={ setPublish }
+						__nextHasNoMarginBottom
+					/>
+					{ requiresPublishConfirmation && (
+						<div className="mt-3">
+							<Notice status="warning" isDismissible={ false } className="mb-3">
+								{ __(
+									'Publishing changes production content immediately. Type PUBLISH to confirm.'
+								) }
+							</Notice>
+							<TextControl
+								label={ __( 'Confirmation' ) }
+								value={ confirmation }
+								onChange={ setConfirmation }
+							/>
+						</div>
+					) }
+				</div>
 				<div className="flex items-center justify-between px-8 py-4 border-t border-frame-border">
 					<div className="text-sm text-frame-text-secondary">
 						{ sprintf( __( '%d selected' ), selectedItems.length ) }
@@ -776,9 +1126,15 @@ function ContentPushPickerModal( {
 						</Button>
 						<Button
 							variant="primary"
-							disabled={ isPreviewing || isPushing || selectedItems.length === 0 || hasConflicts }
+							disabled={
+								isPreviewing ||
+								isPushing ||
+								selectedItems.length === 0 ||
+								hasConflicts ||
+								! hasPublishConfirmation
+							}
 							onClick={ () =>
-								hasPreviewForSelection ? onPush( selectedItems ) : handlePreview()
+								hasPreviewForSelection ? onPush( selectedItems, publish ) : handlePreview()
 							}
 						>
 							{ isPushing
@@ -786,7 +1142,9 @@ function ContentPushPickerModal( {
 								: isPreviewing
 								? __( 'Previewing…' )
 								: hasPreviewForSelection
-								? __( 'Push selected content' )
+								? publish
+									? __( 'Publish selected content' )
+									: __( 'Push selected content as drafts' )
 								: __( 'Preview selected content' ) }
 						</Button>
 					</div>
@@ -850,6 +1208,18 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 	const [ runningMaintenanceAction, setRunningMaintenanceAction ] = useState< string | null >(
 		null
 	);
+	const [ debugLogConnection, setDebugLogConnection ] = useState< SelfHostedSshConnection | null >(
+		null
+	);
+	const [ debugLog, setDebugLog ] = useState< SelfHostedSshDebugLog | null >( null );
+	const [ isLoadingDebugLog, setIsLoadingDebugLog ] = useState( false );
+	const [ isClearingDebugLog, setIsClearingDebugLog ] = useState( false );
+	const [ incrementalConnection, setIncrementalConnection ] =
+		useState< SelfHostedSshConnection | null >( null );
+	const [ incrementalPreview, setIncrementalPreview ] =
+		useState< SelfHostedSshIncrementalPreview | null >( null );
+	const [ isLoadingIncrementalPreview, setIsLoadingIncrementalPreview ] = useState( false );
+	const [ isApplyingIncrementalSync, setIsApplyingIncrementalSync ] = useState( false );
 
 	const connectedSiteIds = connectedSites.map( ( { id } ) => id );
 	// Subscribe to /me/sites so reconcileConnectedSites runs on page load to
@@ -959,20 +1329,26 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 
 	const handlePushSelfHostedRestContent = async (
 		connectionId: string,
-		selectedItems: SelectedContentItem[]
+		selectedItems: SelectedContentItem[],
+		publish: boolean
 	) => {
 		setPushingConnectionId( connectionId );
 		try {
 			const summary = await getIpcApi().pushSelfHostedRestContent( selectedSite.id, connectionId, {
-				publish: false,
+				publish,
 				selectedItems,
 			} );
+			const notificationTemplate = publish
+				? __(
+						'Published %1$d posts, %2$d pages, %3$d media items, %4$d categories, and %5$d tags.'
+				  )
+				: __(
+						'Pushed %1$d posts, %2$d pages, %3$d media items, %4$d categories, and %5$d tags as drafts.'
+				  );
 			getIpcApi().showNotification( {
 				title: __( 'Content pushed' ),
 				body: sprintf(
-					__(
-						'Pushed %1$d posts, %2$d pages, %3$d media items, %4$d categories, and %5$d tags as drafts.'
-					),
+					notificationTemplate,
 					summary.posts,
 					summary.pages,
 					summary.media,
@@ -1139,6 +1515,73 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 		}
 	};
 
+	const handlePullSelfHostedConnectorSite = async ( connection: SelfHostedSyncConnection ) => {
+		const CANCEL_BUTTON_INDEX = 1;
+		const PULL_BUTTON_INDEX = 0;
+		const { response } = await getIpcApi().showMessageBox( {
+			message: __( 'Pull the connector site into Studio?' ),
+			detail: __(
+				'The connector will export the remote database and wp-content, then Studio will import them into this local site.'
+			),
+			buttons: [ __( 'Pull to local' ), __( 'Cancel' ) ],
+			cancelId: CANCEL_BUTTON_INDEX,
+		} );
+		if ( response !== PULL_BUTTON_INDEX ) {
+			return;
+		}
+		setPullingConnectionId( connection.id );
+		try {
+			await getIpcApi().pullSelfHostedConnectorSite( selectedSite.id, connection.id );
+			getIpcApi().showNotification( {
+				title: __( 'Connector site pulled' ),
+				body: __( 'The remote connector archive was imported into Studio.' ),
+			} );
+		} catch ( error ) {
+			getIpcApi().showErrorMessageBox( {
+				title: __( 'Connector pull failed' ),
+				message: error instanceof Error ? error.message : __( 'Please try again.' ),
+			} );
+		} finally {
+			setPullingConnectionId( null );
+		}
+	};
+
+	const handlePushSelfHostedConnectorSite = async ( connection: SelfHostedSyncConnection ) => {
+		const CANCEL_BUTTON_INDEX = 1;
+		const PUSH_BUTTON_INDEX = 0;
+		const { response } = await getIpcApi().showMessageBox( {
+			message: __( 'Back up and push this Studio site through the connector?' ),
+			detail: __(
+				'Studio will upload a full archive. The connector must create a remote backup before restoring it. Production connector push is disabled.'
+			),
+			buttons: [ __( 'Back up and push' ), __( 'Cancel' ) ],
+			cancelId: CANCEL_BUTTON_INDEX,
+		} );
+		if ( response !== PUSH_BUTTON_INDEX ) {
+			return;
+		}
+		setPushingConnectionId( connection.id );
+		try {
+			const result = await getIpcApi().pushSelfHostedConnectorSite(
+				selectedSite.id,
+				connection.id
+			);
+			getIpcApi().showNotification( {
+				title: __( 'Connector site pushed' ),
+				body: result.backupId
+					? sprintf( __( 'Remote backup created: %s.' ), result.backupId )
+					: __( 'The remote connector restore completed.' ),
+			} );
+		} catch ( error ) {
+			getIpcApi().showErrorMessageBox( {
+				title: __( 'Connector push failed' ),
+				message: error instanceof Error ? error.message : __( 'Please try again.' ),
+			} );
+		} finally {
+			setPushingConnectionId( null );
+		}
+	};
+
 	const deleteSelfHostedSshBackups = async (
 		connection: SelfHostedSshConnection,
 		backups: SelfHostedSshBackup[]
@@ -1296,6 +1739,113 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 		}
 	};
 
+	const loadSelfHostedSshDebugLog = async ( connection: SelfHostedSshConnection ) => {
+		setIsLoadingDebugLog( true );
+		try {
+			setDebugLog( await getIpcApi().getSelfHostedSshDebugLog( selectedSite.id, connection.id ) );
+		} catch ( error ) {
+			getIpcApi().showErrorMessageBox( {
+				title: __( 'Failed to load debug log' ),
+				message: error instanceof Error ? error.message : __( 'Please try again.' ),
+			} );
+		} finally {
+			setIsLoadingDebugLog( false );
+		}
+	};
+
+	const handleViewSelfHostedSshDebugLog = ( connection: SelfHostedSshConnection ) => {
+		setDebugLogConnection( connection );
+		setDebugLog( null );
+		void loadSelfHostedSshDebugLog( connection );
+	};
+
+	const handleDownloadSelfHostedSshDebugLog = async ( connection: SelfHostedSshConnection ) => {
+		try {
+			await getIpcApi().downloadSelfHostedSshDebugLog( selectedSite.id, connection.id );
+		} catch ( error ) {
+			getIpcApi().showErrorMessageBox( {
+				title: __( 'Failed to download debug log' ),
+				message: error instanceof Error ? error.message : __( 'Please try again.' ),
+			} );
+		}
+	};
+
+	const handleClearSelfHostedSshDebugLog = async ( connection: SelfHostedSshConnection ) => {
+		const CANCEL_BUTTON_INDEX = 1;
+		const CLEAR_BUTTON_INDEX = 0;
+		const { response } = await getIpcApi().showMessageBox( {
+			message: __( 'Clear the remote debug log?' ),
+			detail: __( 'Download the log first if you need to retain it for diagnosis.' ),
+			buttons: [ __( 'Clear log' ), __( 'Cancel' ) ],
+			cancelId: CANCEL_BUTTON_INDEX,
+		} );
+		if ( response !== CLEAR_BUTTON_INDEX ) {
+			return;
+		}
+		setIsClearingDebugLog( true );
+		try {
+			await getIpcApi().runSelfHostedSshMaintenanceAction( selectedSite.id, connection.id, {
+				action: 'clear-debug-log',
+			} );
+			await Promise.all( [
+				loadSelfHostedSshDebugLog( connection ),
+				loadSelfHostedSshManagementStatus( connection ),
+			] );
+		} catch ( error ) {
+			getIpcApi().showErrorMessageBox( {
+				title: __( 'Failed to clear debug log' ),
+				message: error instanceof Error ? error.message : __( 'Please try again.' ),
+			} );
+		} finally {
+			setIsClearingDebugLog( false );
+		}
+	};
+
+	const handleCompareSelfHostedSshFiles = async ( connection: SelfHostedSshConnection ) => {
+		setIncrementalConnection( connection );
+		setIncrementalPreview( null );
+		setIsLoadingIncrementalPreview( true );
+		try {
+			setIncrementalPreview(
+				await getIpcApi().previewSelfHostedSshIncrementalSync( selectedSite.id, connection.id )
+			);
+		} catch ( error ) {
+			setIncrementalConnection( null );
+			getIpcApi().showErrorMessageBox( {
+				title: __( 'Failed to compare files' ),
+				message: error instanceof Error ? error.message : __( 'Please try again.' ),
+			} );
+		} finally {
+			setIsLoadingIncrementalPreview( false );
+		}
+	};
+
+	const handleApplySelfHostedSshIncrementalSync = async (
+		connection: SelfHostedSshConnection,
+		preview: SelfHostedSshIncrementalPreview
+	) => {
+		setIsApplyingIncrementalSync( true );
+		try {
+			const result = await getIpcApi().applySelfHostedSshIncrementalSync(
+				selectedSite.id,
+				connection.id,
+				preview
+			);
+			getIpcApi().showNotification( {
+				title: __( 'Incremental sync completed' ),
+				body: sprintf( __( 'Remote backup retained at %s.' ), result.backupPath ),
+			} );
+			setIncrementalConnection( null );
+		} catch ( error ) {
+			getIpcApi().showErrorMessageBox( {
+				title: __( 'Incremental sync failed' ),
+				message: error instanceof Error ? error.message : __( 'Please try again.' ),
+			} );
+		} finally {
+			setIsApplyingIncrementalSync( false );
+		}
+	};
+
 	const handleRestoreSelfHostedSshBackup = async (
 		connection: SelfHostedSshConnection,
 		backup: SelfHostedSshBackup
@@ -1406,6 +1956,12 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 									handleManageSelfHostedSshSite( connection );
 								}
 							} }
+							onPullConnectorSite={ ( connection ) =>
+								void handlePullSelfHostedConnectorSite( connection )
+							}
+							onPushConnectorSite={ ( connection ) =>
+								void handlePushSelfHostedConnectorSite( connection )
+							}
 							pushingConnectionId={ pushingConnectionId }
 							preflightingConnectionId={ preflightingConnectionId }
 							pullingConnectionId={ pullingConnectionId }
@@ -1507,6 +2063,10 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 					isPreviewing={ isPreviewingContentPush }
 					isPushing={ pushingConnectionId === pickingConnectionId }
 					preview={ contentPushPreview }
+					isProduction={
+						syncConnections.find( ( connection ) => connection.id === pickingConnectionId )
+							?.environmentType === 'production'
+					}
 					onRequestClose={ () => {
 						if ( pushingConnectionId ) {
 							return;
@@ -1516,8 +2076,8 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 					onPreview={ ( selectedItems ) =>
 						handlePreviewSelfHostedRestContentPush( pickingConnectionId, selectedItems )
 					}
-					onPush={ ( selectedItems ) =>
-						handlePushSelfHostedRestContent( pickingConnectionId, selectedItems )
+					onPush={ ( selectedItems, publish ) =>
+						handlePushSelfHostedRestContent( pickingConnectionId, selectedItems, publish )
 					}
 				/>
 			) }
@@ -1573,9 +2133,51 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 						}
 					} }
 					onRefresh={ () => void loadSelfHostedSshManagementStatus( managementConnection ) }
+					onViewDebugLog={ () => handleViewSelfHostedSshDebugLog( managementConnection ) }
+					onDownloadDebugLog={ () =>
+						void handleDownloadSelfHostedSshDebugLog( managementConnection )
+					}
+					onCompareFiles={ () => void handleCompareSelfHostedSshFiles( managementConnection ) }
 					onRunAction={ ( action ) =>
 						void handleSelfHostedSshMaintenanceAction( managementConnection, action )
 					}
+				/>
+			) }
+
+			{ debugLogConnection && (
+				<SelfHostedSshDebugLogModal
+					log={ debugLog }
+					isLoading={ isLoadingDebugLog }
+					isClearing={ isClearingDebugLog }
+					onRequestClose={ () => {
+						if ( ! isClearingDebugLog ) {
+							setDebugLogConnection( null );
+						}
+					} }
+					onRefresh={ () => void loadSelfHostedSshDebugLog( debugLogConnection ) }
+					onDownload={ () => void handleDownloadSelfHostedSshDebugLog( debugLogConnection ) }
+					onClear={ () => void handleClearSelfHostedSshDebugLog( debugLogConnection ) }
+				/>
+			) }
+
+			{ incrementalConnection && (
+				<SelfHostedSshIncrementalSyncModal
+					preview={ incrementalPreview }
+					isLoading={ isLoadingIncrementalPreview }
+					isApplying={ isApplyingIncrementalSync }
+					onRequestClose={ () => {
+						if ( ! isApplyingIncrementalSync ) {
+							setIncrementalConnection( null );
+						}
+					} }
+					onApply={ () => {
+						if ( incrementalPreview ) {
+							void handleApplySelfHostedSshIncrementalSync(
+								incrementalConnection,
+								incrementalPreview
+							);
+						}
+					} }
 				/>
 			) }
 

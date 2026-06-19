@@ -138,6 +138,10 @@ const api: IpcApi = {
 	getSyncConnections: ( localSiteId ) => ipcRendererInvoke( 'getSyncConnections', localSiteId ),
 	getSelfHostedSshManagementStatus: ( localSiteId, connectionId ) =>
 		ipcRendererInvoke( 'getSelfHostedSshManagementStatus', localSiteId, connectionId ),
+	getSelfHostedSshDebugLog: ( localSiteId, connectionId ) =>
+		ipcRendererInvoke( 'getSelfHostedSshDebugLog', localSiteId, connectionId ),
+	downloadSelfHostedSshDebugLog: ( localSiteId, connectionId ) =>
+		ipcRendererInvoke( 'downloadSelfHostedSshDebugLog', localSiteId, connectionId ),
 	saveSyncConnection: ( localSiteId, connection ) =>
 		ipcRendererInvoke( 'saveSyncConnection', localSiteId, connection ),
 	deleteSyncConnection: ( localSiteId, connectionId ) =>
@@ -155,12 +159,20 @@ const api: IpcApi = {
 		ipcRendererInvoke( 'previewSelfHostedRestContentPush', localSiteId, connectionId, options ),
 	previewSelfHostedSshPush: ( localSiteId, connectionId, options ) =>
 		ipcRendererInvoke( 'previewSelfHostedSshPush', localSiteId, connectionId, options ),
+	previewSelfHostedSshIncrementalSync: ( localSiteId, connectionId ) =>
+		ipcRendererInvoke( 'previewSelfHostedSshIncrementalSync', localSiteId, connectionId ),
+	applySelfHostedSshIncrementalSync: ( localSiteId, connectionId, preview ) =>
+		ipcRendererInvoke( 'applySelfHostedSshIncrementalSync', localSiteId, connectionId, preview ),
 	pushSelfHostedRestContent: ( localSiteId, connectionId, options ) =>
 		ipcRendererInvoke( 'pushSelfHostedRestContent', localSiteId, connectionId, options ),
 	pushSelfHostedSshSite: ( localSiteId, connectionId, options ) =>
 		ipcRendererInvoke( 'pushSelfHostedSshSite', localSiteId, connectionId, options ),
+	pushSelfHostedConnectorSite: ( localSiteId, connectionId ) =>
+		ipcRendererInvoke( 'pushSelfHostedConnectorSite', localSiteId, connectionId ),
 	pullSelfHostedSshSite: ( localSiteId, connectionId, options ) =>
 		ipcRendererInvoke( 'pullSelfHostedSshSite', localSiteId, connectionId, options ),
+	pullSelfHostedConnectorSite: ( localSiteId, connectionId ) =>
+		ipcRendererInvoke( 'pullSelfHostedConnectorSite', localSiteId, connectionId ),
 	restoreSelfHostedSshBackup: ( localSiteId, connectionId, backupId ) =>
 		ipcRendererInvoke( 'restoreSelfHostedSshBackup', localSiteId, connectionId, backupId ),
 	runSelfHostedSshMaintenanceAction: ( localSiteId, connectionId, action ) =>

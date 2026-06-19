@@ -169,10 +169,7 @@ export function SelfHostedConnectionWizard( {
 		( syncMode === 'ssh-wp-cli' && hasSshCredentials ) ||
 		( syncMode === 'connector-plugin' && hasConnectorCredentials );
 	const canSave = Boolean( normalizedUrl && ( hasCredentialsForMode || canKeepSavedCredentials ) );
-	const canTest =
-		( syncMode === 'rest-content' || syncMode === 'ssh-wp-cli' ) &&
-		Boolean( normalizedUrl ) &&
-		canSave;
+	const canTest = Boolean( normalizedUrl ) && canSave;
 
 	const buildConnection = (): SyncConnection => {
 		const now = new Date().toISOString();
@@ -421,7 +418,7 @@ export function SelfHostedConnectionWizard( {
 					{ syncMode === 'connector-plugin' && (
 						<Notice status="info" isDismissible={ false }>
 							{ __(
-								'Connection testing for the connector plugin mode will be added with the plugin implementation.'
+								'The remote site must expose the Studio Connector REST API at /wp-json/studio-connector/v1/.'
 							) }
 						</Notice>
 					) }
