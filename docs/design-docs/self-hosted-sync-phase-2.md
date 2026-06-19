@@ -284,3 +284,31 @@ Still pending:
 - [ ] Debug-log viewer and clearing controls.
 - [ ] Uptime and HTTP response monitoring.
 - [ ] Automatic rollback for manually selected backup restores.
+
+## SSH Integration Test Addendum
+
+An opt-in Docker integration environment validates SSH transport and remote backup behavior against a real WordPress installation, MariaDB, OpenSSH, and WP-CLI.
+
+Included:
+
+- [x] Disposable WordPress and MariaDB Compose fixture.
+- [x] Password-authenticated unprivileged SSH account.
+- [x] Real WordPress database export and import through WP-CLI.
+- [x] Selective plugin-directory backup and restore.
+- [x] Verification that unrelated `wp-content` paths remain unchanged.
+- [x] Verification that Studio temporary paths remain under the configured WordPress directory.
+- [x] Automatic container and volume cleanup after the suite.
+
+Run locally:
+
+```bash
+npm run test:ssh-integration
+```
+
+The regular unit-test suite skips this environment unless `RUN_SSH_INTEGRATION_TESTS=1` is set.
+
+Still pending:
+
+- [ ] Electron UI integration coverage for the complete connection wizard and sync dialogs.
+- [ ] Public-key authentication fixture.
+- [ ] Failure-injection cases for interrupted upload, disk exhaustion, and failed rollback.

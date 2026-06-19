@@ -53,6 +53,7 @@
 		"typecheck": "npm run typecheck --workspaces --if-present && tsc -p scripts/tsconfig.json --noEmit",
 		"format": "npm run lint --workspaces --if-present -- --fix && eslint scripts --fix",
 		"test": "vitest run",
+		"test:ssh-integration": "RUN_SSH_INTEGRATION_TESTS=1 vitest run apps/studio/src/modules/sync/tests/self-hosted-ssh.integration.test.ts",
 		"test:watch": "vitest",
 		"e2e": "npx playwright install && npx playwright test",
 		"test:metrics": "npx playwright test --config=./tools/metrics/playwright.metrics.config.ts",
