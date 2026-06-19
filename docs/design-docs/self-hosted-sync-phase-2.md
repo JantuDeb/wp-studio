@@ -2,7 +2,7 @@
 
 ## Scope
 
-Phase 2 adds a first-class self-hosted connection flow without enabling self-hosted sync operations yet. WordPress.com and Pressable sync remain available through the existing provider and UI path.
+This document started as the Phase 2 connection checklist and now tracks the complete self-hosted sync proof of concept. WordPress.com and Pressable sync remain available through the existing provider and UI path.
 
 ## Completed
 
@@ -28,19 +28,20 @@ Phase 2 adds a first-class self-hosted connection flow without enabling self-hos
 - [x] Added a simple self-hosted connections list in the Sync tab.
 - [x] Allowed self-hosted connections without WordPress.com authentication.
 
-## Not Implemented Yet
+## Current Capability Status
 
-- [ ] REST content push for posts, pages, media, terms, and post meta.
-- [ ] Connector plugin connection testing.
+- [x] REST content push for posts, pages, media, terms, and remote-ID post meta.
+- [x] Connector plugin connection testing and desktop transport protocol.
 - [x] SSH/WP-CLI pull to local Studio site.
-- [ ] Self-hosted push operations.
-- [ ] Production database push.
+- [x] Self-hosted staging/development push operations.
+- [x] Production REST content push with draft defaults and typed publish confirmation.
+- [ ] Production database/file push. This remains intentionally disabled.
 
 ## Guardrails
 
 - [x] WordPress.com / Pressable behavior is preserved.
 - [x] Full-sync providers still advertise `canPushToProduction: false`.
-- [x] The UI states that connector testing is not available yet.
+- [x] Connector capability testing validates the authenticated connector REST API.
 - [x] REST testing only verifies that the remote site exposes a WordPress REST API index.
 - [x] Self-hosted auth fields are stripped from `shared.json` and stored in encrypted Studio app data.
 - [x] Saved self-hosted connections can be edited to update site metadata or replace credentials.
@@ -52,9 +53,9 @@ Phase 2 adds a first-class self-hosted connection flow without enabling self-hos
 - [x] Add secure credential storage or encryption before production use.
 - [x] Implement REST content-only push and default remote writes to draft.
 - [x] Add SSH/WP-CLI preflight checks.
-- [ ] Add connector plugin discovery and token validation.
-- [ ] Reuse existing import/export archive code for full sync.
-- [ ] Add production push dry-run, backup, and typed-confirmation requirements.
+- [x] Add connector plugin discovery and token validation.
+- [x] Reuse existing import/export archive code for full sync.
+- [x] Add dry-run, backup, and typed-confirmation guardrails where remote writes are enabled.
 
 ## Phase 3 Addendum
 
@@ -120,7 +121,7 @@ Still pending:
 - [x] Pull remote database with `wp db export`.
 - [x] Archive and download remote `wp-content` parts.
 - [x] Reuse Studio import code to restore the archive locally.
-- [ ] Staging push with backup and selected restore parts.
+- [x] Staging push with backup and selected restore parts.
 
 ## SSH Pull Addendum
 
@@ -139,8 +140,8 @@ Included:
 Still pending:
 
 - [x] Selective pull parts for database, plugins, themes, uploads, and other `wp-content` folders.
-- [ ] Progress events for remote export, SFTP download, and import phases.
-- [ ] Remote archive size estimate before download.
+- [x] Progress events for remote preparation, SFTP download, and import phases.
+- [ ] Remote pull archive size estimate before download.
 - [ ] Better remote cleanup reporting if cleanup fails.
 
 ## Shared Sync Selection Addendum
@@ -162,7 +163,7 @@ Still pending:
 
 - [ ] Extract the complete WP.com and SSH dialog shell into a provider-neutral sync dialog component.
 - [x] Add SSH staging push using the same selection model, with mandatory backup.
-- [ ] Disable database push for production until backup, dry-run, and typed confirmation exist.
+- [x] Keep database/file push disabled for production.
 
 ## SSH Staging Push Addendum
 
@@ -186,8 +187,8 @@ Still pending:
 
 - [x] Backup browser and one-click rollback.
 - [x] Push dry-run with remote archive size and disk-space estimates.
-- [ ] Progress events for export, upload, backup, restore, and search-replace.
-- [ ] Production file push policy; production database push remains disabled.
+- [x] Progress events for export, upload/download, backup, restore, and verification.
+- [x] Production file/database push policy: disabled; production uses REST content sync.
 
 ## SSH Backup Restore Addendum
 
@@ -209,7 +210,7 @@ Limitations:
 
 - Backups created before manifests were introduced are not shown.
 - Individual deletion and keep-latest-five retention are supported; automatic age/size policy is not.
-- Restore progress and automatic verification are still pending.
+- Restore progress and automatic verification are implemented.
 
 ## SSH Push Preflight Addendum
 
@@ -253,7 +254,8 @@ Still pending:
 - [x] Automatic rollback when post-push or component-update verification fails.
 - [x] Plugin/theme update and maintenance management.
 - [x] Remote cron, debug-log, and cache maintenance dashboard.
-- [ ] Vulnerability data and remote uptime monitoring.
+- [x] HTTP availability and response-time monitoring.
+- [ ] Vulnerability/advisory data integration.
 
 ## SSH Site Management Addendum
 
@@ -278,11 +280,11 @@ Included:
 
 Still pending:
 
-- [ ] Bulk update selection.
-- [ ] WordPress core update workflow.
+- [x] Bulk update selection.
+- [x] WordPress core update workflow.
 - [ ] Vulnerability/advisory integration.
-- [ ] Debug-log viewer and clearing controls.
-- [ ] Uptime and HTTP response monitoring.
+- [x] Debug-log viewer, download, fatal highlighting, and clearing controls.
+- [x] HTTP availability and response-time monitoring.
 - [ ] Automatic rollback for manually selected backup restores.
 
 ## SSH Integration Test Addendum
@@ -372,3 +374,41 @@ Still pending:
 
 - [ ] Scheduled production publishing.
 - [ ] Editorial approval roles and deployment audit history.
+
+## Consolidated Next Features
+
+The following items are the current roadmap. Earlier phase checklists above are retained for implementation history.
+
+### Reliability And Testing
+
+- [ ] Add Electron UI integration coverage for connection, selection, push, pull, backup, restore, and management dialogs.
+- [ ] Add public-key authentication to the Docker SSH fixture.
+- [ ] Add failure injection for interrupted transfers, insufficient disk space, remote command failure, and failed rollback.
+- [ ] Add focused main-process tests for REST content synchronization.
+- [ ] Add automatic verification and rollback coverage for manually selected backup restores.
+
+### Content Fidelity
+
+- [ ] Detect media referenced only through gallery blocks, block JSON attributes, shortcodes, or attachment IDs.
+- [ ] Preserve additional attachment and featured-image metadata.
+- [ ] Add scheduled production publishing.
+- [ ] Add deployment history, editorial approval, and audit records.
+
+### Operations And Security
+
+- [ ] Integrate plugin/theme/core vulnerability and advisory data.
+- [ ] Add automatic backup retention by age, count, and total size.
+- [ ] Add remote pull archive-size estimation before download.
+- [ ] Improve reporting when remote temporary-directory cleanup fails.
+- [ ] Add configurable recurring HTTP health checks and notifications.
+
+### Architecture
+
+- [ ] Extract the common WP.com and self-hosted sync dialog shell into a provider-neutral component.
+- [ ] Add optional CLI access to encrypted self-hosted credentials and operations.
+- [ ] Build and publish the separately installable WordPress connector plugin that implements the documented REST contract.
+
+### Intentional Restrictions
+
+- [ ] Production SSH/connector database and file push remains disabled until broader real-host testing and review.
+- [ ] Production backup restore remains read-only in Studio.
