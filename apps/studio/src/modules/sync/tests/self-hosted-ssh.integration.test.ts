@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { Client } from 'ssh2';
@@ -38,6 +39,33 @@ async function connect(): Promise< Client > {
 				port: 22222,
 				username: 'studio',
 				password: 'studio',
+				readyTimeout: 10_000,
+			} );
+	} );
+}
+
+async function connectWithPrivateKey(): Promise< Client > {
+	const privateKey = readFileSync( path.join( fixtureDirectory, 'test_key' ) );
+	return new Promise( ( resolve, reject ) => {
+		const client = new Client();
+		let settled = false;
+		client
+			.once( 'ready', () => {
+				settled = true;
+				resolve( client );
+			} )
+			.on( 'error', ( error ) => {
+				if ( ! settled ) {
+					settled = true;
+					client.end();
+					reject( error );
+				}
+			} )
+			.connect( {
+				host: '127.0.0.1',
+				port: 22222,
+				username: 'studio',
+				privateKey,
 				readyTimeout: 10_000,
 			} );
 	} );
@@ -128,6 +156,16 @@ describe.skipIf( ! shouldRun )( 'self-hosted SSH integration', () => {
 				].join( ' && ' )
 			);
 			expect( result.trim().split( '\n' ).at( -1 ) ).toBe( 'before|changed|before' );
+		} finally {
+			client.end();
+		}
+	} );
+
+	it( 'authenticates over SSH using a private key', async () => {
+		const client = await connectWithPrivateKey();
+		try {
+			const result = await runSshCommand( client, 'cd /var/www/html && wp core version' );
+			expect( result.trim() ).toMatch( /^\d+\.\d+/ );
 		} finally {
 			client.end();
 		}

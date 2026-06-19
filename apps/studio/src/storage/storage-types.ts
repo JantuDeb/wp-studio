@@ -34,6 +34,10 @@ export interface SyncConnectionCredentialRecord {
 	updatedAt: string;
 }
 
+// Deployment history entries are stored as plain JSON (no secrets) keyed by
+// `localSiteId:connectionId`. See `SyncDeploymentRecord` in `@studio/common/types/sync`.
+export type SyncDeploymentHistory = Record< string, unknown[] >;
+
 export interface UserData {
 	version: 1;
 	siteMetadata: Record< string, AppdataSiteData >;
@@ -58,6 +62,7 @@ export interface UserData {
 	lastNightlyUpdateCheck?: number;
 	nightlyPromptResult?: NightlyPromptResult;
 	syncConnectionCredentials?: Record< string, SyncConnectionCredentialRecord >;
+	syncDeploymentHistory?: SyncDeploymentHistory;
 }
 
 export interface PromptWindowsSpeedUpResult {

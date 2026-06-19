@@ -136,8 +136,12 @@ const api: IpcApi = {
 		ipcRendererInvoke( 'getConnectedWpcomSites', localSiteId ),
 	fetchSyncableWpcomSites: () => ipcRendererInvoke( 'fetchSyncableWpcomSites' ),
 	getSyncConnections: ( localSiteId ) => ipcRendererInvoke( 'getSyncConnections', localSiteId ),
+	getSyncDeployments: ( localSiteId, connectionId ) =>
+		ipcRendererInvoke( 'getSyncDeployments', localSiteId, connectionId ),
 	getSelfHostedSshManagementStatus: ( localSiteId, connectionId ) =>
 		ipcRendererInvoke( 'getSelfHostedSshManagementStatus', localSiteId, connectionId ),
+	getSelfHostedSshAdvisories: ( localSiteId, connectionId ) =>
+		ipcRendererInvoke( 'getSelfHostedSshAdvisories', localSiteId, connectionId ),
 	getSelfHostedSshDebugLog: ( localSiteId, connectionId ) =>
 		ipcRendererInvoke( 'getSelfHostedSshDebugLog', localSiteId, connectionId ),
 	downloadSelfHostedSshDebugLog: ( localSiteId, connectionId ) =>
@@ -148,6 +152,8 @@ const api: IpcApi = {
 		ipcRendererInvoke( 'deleteSyncConnection', localSiteId, connectionId ),
 	deleteSelfHostedSshBackup: ( localSiteId, connectionId, backupId ) =>
 		ipcRendererInvoke( 'deleteSelfHostedSshBackup', localSiteId, connectionId, backupId ),
+	applySelfHostedSshBackupRetention: ( localSiteId, connectionId, policy ) =>
+		ipcRendererInvoke( 'applySelfHostedSshBackupRetention', localSiteId, connectionId, policy ),
 	testSyncConnection: ( connection ) => ipcRendererInvoke( 'testSyncConnection', connection ),
 	listSelfHostedRestContent: ( localSiteId ) =>
 		ipcRendererInvoke( 'listSelfHostedRestContent', localSiteId ),
@@ -159,6 +165,8 @@ const api: IpcApi = {
 		ipcRendererInvoke( 'previewSelfHostedRestContentPush', localSiteId, connectionId, options ),
 	previewSelfHostedSshPush: ( localSiteId, connectionId, options ) =>
 		ipcRendererInvoke( 'previewSelfHostedSshPush', localSiteId, connectionId, options ),
+	previewSelfHostedSshPull: ( localSiteId, connectionId, options ) =>
+		ipcRendererInvoke( 'previewSelfHostedSshPull', localSiteId, connectionId, options ),
 	previewSelfHostedSshIncrementalSync: ( localSiteId, connectionId ) =>
 		ipcRendererInvoke( 'previewSelfHostedSshIncrementalSync', localSiteId, connectionId ),
 	applySelfHostedSshIncrementalSync: ( localSiteId, connectionId, preview ) =>

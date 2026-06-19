@@ -375,40 +375,155 @@ Still pending:
 - [ ] Scheduled production publishing.
 - [ ] Editorial approval roles and deployment audit history.
 
-## Consolidated Next Features
+## Production-Readiness Implementation Plan
 
-The following items are the current roadmap. Earlier phase checklists above are retained for implementation history.
+This is the live tracker for finishing self-hosted sync. Items are ordered from **most
+significant to least** so we can implement and verify them one at a time. The earlier phase
+checklists above are kept for implementation history; this section supersedes the previous
+"Consolidated Next Features" list.
 
-### Reliability And Testing
+### Definition Of Done (per feature)
 
-- [ ] Add Electron UI integration coverage for connection, selection, push, pull, backup, restore, and management dialogs.
-- [ ] Add public-key authentication to the Docker SSH fixture.
-- [ ] Add failure injection for interrupted transfers, insufficient disk space, remote command failure, and failed rollback.
-- [ ] Add focused main-process tests for REST content synchronization.
-- [ ] Add automatic verification and rollback coverage for manually selected backup restores.
+A feature is checked off here only when:
 
-### Content Fidelity
+- [ ] Implementation is complete end-to-end (main process + IPC + renderer where applicable).
+- [ ] `npm run typecheck` is clean.
+- [ ] `npx eslint --fix` on modified files is clean.
+- [ ] Focused unit tests are added/updated and passing.
+- [ ] This checklist and any relevant addendum above are updated.
 
-- [ ] Detect media referenced only through gallery blocks, block JSON attributes, shortcodes, or attachment IDs.
-- [ ] Preserve additional attachment and featured-image metadata.
-- [ ] Add scheduled production publishing.
-- [ ] Add deployment history, editorial approval, and audit records.
+---
 
-### Operations And Security
+### 1. Sync Fidelity — Content Detection (highest value)
 
-- [ ] Integrate plugin/theme/core vulnerability and advisory data.
-- [ ] Add automatic backup retention by age, count, and total size.
-- [ ] Add remote pull archive-size estimation before download.
-- [ ] Improve reporting when remote temporary-directory cleanup fails.
-- [ ] Add configurable recurring HTTP health checks and notifications.
+The current REST push only detects media referenced by an exact local URL substring. Sites that
+use the block editor, galleries, or shortcodes lose images on push. This is the most valuable gap.
 
-### Architecture
+- [x] 1.1 Detect attachment references by ID: `wp:image {"id":N}`, `[gallery ids="..."]`,
+      `[caption id="attachment_N"]`, classic `class="wp-image-N"`.
+- [x] 1.2 Detect media in gallery blocks and block JSON attributes (`wp:gallery`, nested
+      `wp:image` inside columns/cover/media-text). Covered by the block-JSON `"id"`/`"ids"`
+      scanners, which match nested blocks regardless of container.
+- [x] 1.3 Detect media in shortcodes (`[gallery]`, `[playlist]`, `[audio]`, `[video]`) via the
+      `ids="..."` / `id="..."` shortcode-attribute scanners.
+- [x] 1.4 Rewrite block JSON `id`/`ids` attributes, shortcode ids, and `wp-image-N`/`wp-att-N`
+      classes to the remote attachment ID after upload, not just URLs
+      (`rewriteMediaIdReferences`). Only uploaded media IDs are remapped, so unrelated block IDs
+      are left untouched.
+- [x] 1.5 Unit tests for every detection and rewrite path (extended
+      `self-hosted-media-sync.test.ts`: 14 new cases).
 
-- [ ] Extract the common WP.com and self-hosted sync dialog shell into a provider-neutral component.
-- [ ] Add optional CLI access to encrypted self-hosted credentials and operations.
-- [ ] Build and publish the separately installable WordPress connector plugin that implements the documented REST contract.
+Implementation: `getMediaIdsReferencedById` and `rewriteMediaIdReferences` in
+`apps/studio/src/modules/sync/lib/self-hosted-media-sync.ts`, wired into
+`pushSelfHostedRestContent` so id-referenced media are uploaded and their IDs rewritten in
+content/excerpt alongside URL replacement.
 
-### Intentional Restrictions
+### 2. Sync Fidelity — REST Post/Page Sync Correctness
 
-- [ ] Production SSH/connector database and file push remains disabled until broader real-host testing and review.
+Make the post/page push faithful: metadata, ordering, hierarchy, and idempotency.
+
+- [x] 2.1 Preserve full attachment/featured-image metadata (alt, caption, description, title) on
+      media upload, including `_wp_attachment_image_alt` (mirrored into attachment `meta`) and the
+      attachment `date`/`date_gmt`.
+- [x] 2.2 Push page parent hierarchy and `menu_order` so page trees survive the round trip. Pages
+      are ordered parent-first (`orderContentForPush`) and the parent's freshly-created remote ID
+      is mapped onto the child's `parent`.
+- [x] 2.3 Push canonical post fields currently dropped: `excerpt` (already), `comment_status`,
+      `ping_status`, `sticky` (posts), and post `date`/`date_gmt` (only when publishing, so drafts
+      are not forced to a date).
+- [x] 2.4 Map featured image to the uploaded remote attachment ID (`featured_media`) — confirmed
+      and covered by tests.
+- [x] 2.5 Idempotency: a second push of unchanged content reuses the stored remote ID and issues
+      an update against the same remote item rather than creating a duplicate (test-covered).
+- [x] 2.6 Focused main-process tests for the REST content-push pipeline (preview + push) against an
+      in-memory fake remote REST API (`self-hosted-rest-content-push.test.ts`, 9 cases).
+
+### 3. Sync Reliability — Tests And Rollback Coverage
+
+- [x] 3.1 Automatic verification + rollback for manually selected backup restores. After applying a
+      selected restore, `restoreSelfHostedSshBackup` now verifies the site and, on failure, reverts
+      to the pre-restore safety backup it just captured (mirroring the push auto-rollback), reporting
+      whether the rollback itself verified.
+- [x] 3.2 Failure-injection unit coverage (`self-hosted-ssh-failure-injection.test.ts`): insufficient
+      remote disk space (now an authoritative main-process guard before upload), remote command
+      failure during backup/apply, post-push verification failure → auto-rollback, double failure
+      (verification + rollback), restore auto-rollback, and production-restore rejection.
+- [x] 3.3 Public-key authentication fixture: the Docker fixture authorizes a committed test-only
+      ED25519 key (`fixtures/ssh-wordpress/test_key`), enables `PubkeyAuthentication`, and a new
+      integration case connects with the private key.
+
+Also hardened: `pushSelfHostedSshSite` now enforces the disk-space preflight in the main process
+(refuses the push before upload when the archive + scoped backup + 100 MB margin exceed available
+remote space), so the block holds even if the renderer preflight is bypassed.
+
+### 4. Operations And Security
+
+- [x] 4.1 Remote pull archive-size estimate before download (`previewSelfHostedSshPull`): reports
+      WP-CLI database size and selected `wp-content` path disk usage, mirroring the push preflight.
+- [x] 4.2 Automatic backup retention by age, count, and total size. Pure, tested policy in
+      `self-hosted-backup-retention.ts` (`selectBackupsToPrune`) + `applySelfHostedSshBackupRetention`
+      handler that prunes `studio-backup-*` pairs over SSH. The newest backup is always retained;
+      pre-restore safety backups are never auto-pruned. Exposed via IPC/preload for the renderer to
+      invoke with a user-configured policy (no silent default deletion).
+- [x] 4.3 Clearer reporting when remote temporary-directory cleanup fails: `cleanupRemoteWorkDir`
+      now logs the failure and emits a UI progress warning naming the leftover path instead of
+      silently swallowing the error.
+- [ ] 4.4 Configurable recurring HTTP health checks with notifications. (Deferred: needs a
+      persistent scheduler/timer in the main process and notification plumbing; the one-shot HTTP
+      status + response time is already part of `getSelfHostedSshManagementStatus`.)
+- [x] 4.5 Integrate plugin/theme/core advisory data into the management dashboard. Dependency-free,
+      no paid feed: `getSelfHostedSshAdvisories` flags extensions removed/closed from the
+      WordPress.org directory (critical security signal) and extensions with available updates
+      (warning), via the pure, tested `buildExtensionAdvisories` in `self-hosted-advisories.ts`.
+      Lookups degrade gracefully on network failure.
+
+### 5. Production Deployment Workflow
+
+- [x] 5.1 Scheduled production publishing. `pushSelfHostedRestContent` accepts a future
+      `scheduledDate`; content is created with WordPress `status: future` and the scheduled
+      `date_gmt`, so it auto-publishes at that time. The date is validated (must parse and be in the
+      future), scheduling counts as a publish for the production approval gate, and the scheduled
+      time is recorded in the audit trail. (Backend + IPC complete and tested; a renderer date
+      picker is the remaining UI surface.)
+- [x] 5.2 Deployment history and audit records for self-hosted pushes. Bounded per-connection
+      history (newest 100) persisted in Desktop app data under the app-data lock
+      (`sync-deployment-history.ts`), written by the SSH push (success/warnings/failure) and the REST
+      content push, and read back via the `getSyncDeployments` IPC handler. Records carry no secrets.
+- [x] 5.3 Editorial approval gate before production content writes. `pushSelfHostedRestContent`
+      now enforces the approval token (`PUBLISH`) in the **main process** when publishing to a
+      production connection — the gate can no longer be bypassed by calling the IPC directly. The
+      renderer threads the typed confirmation through as `approval`; the approval is recorded in the
+      deployment audit trail. Draft pushes and non-production targets are unaffected.
+
+### 6. Architecture
+
+- [x] 6.1 Extract the shared WP.com + self-hosted sync dialog shell into a provider-neutral
+      component (`sync-dialog-shell.tsx`). It owns the modal frame, description, from→to header (with
+      its screen-reader summary), the upper-case section heading, the scroll container, and the
+      pinned footer slot. Both `SyncDialog` (WP.com/Pressable) and `SelfHostedSshSyncDialog` now
+      render through it, passing their provider-specific selection UI as children and their warnings
+      + action buttons as the footer. The two dialogs now share one consistent layout.
+- [ ] 6.2 Optional CLI access to encrypted self-hosted credentials and operations. (Deferred by
+      design: credentials are encrypted with Electron `safeStorage`, which has no CLI-process
+      equivalent. Enabling CLI access requires either re-architecting the vault onto a portable
+      encryption scheme or a CLI→Desktop IPC bridge — a security-sensitive decision that needs team
+      review before implementation. Marked optional in the original roadmap.)
+
+### 7. Connector Plugin (last)
+
+- [x] 7.1 Build the separately installable WordPress connector plugin implementing the documented
+      `/wp-json/studio-connector/v1/` REST contract (status, exports, archives, restore) with
+      bearer-token auth. Reference implementation at `wp-plugins/studio-connector/`
+      (`studio-connector.php` + `README.md`): SHA-256-hashed bearer token with constant-time
+      comparison, `mysqldump`-with-PHP-fallback DB export, `PharData` gzip tar archives matching
+      Studio's `sql/` + `wp-content/` interchange layout, path-traversal-guarded archive handling,
+      a Settings page for token generation/revocation, and production restore blocked by default
+      (opt-in via the `studio_connector_allow_production_restore` filter). Matches the request/
+      response shapes the desktop `connectorRequest` / pull / push handlers expect
+      (`download_url`, `archive_id`, `backup_id`). Needs a security review before production use.
+
+### Intentional Restrictions (kept disabled by design)
+
+- [ ] Production SSH/connector database and file push remains disabled until broader real-host
+      testing and review.
 - [ ] Production backup restore remains read-only in Studio.

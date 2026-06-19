@@ -291,6 +291,45 @@ export const selfHostedSshBackupSchema = z.object( {
 } );
 export type SelfHostedSshBackup = z.infer< typeof selfHostedSshBackupSchema >;
 
+// Deployment history / audit record for a self-hosted push or restore. Stored in Desktop app data
+// keyed by `localSiteId:connectionId` so users can see what was deployed where, when, and whether
+// it verified.
+export const syncDeploymentRecordSchema = z.object( {
+	id: z.string(),
+	localSiteId: z.string(),
+	connectionId: z.string(),
+	provider: syncProviderSchema,
+	operation: z.enum( [ 'push', 'pull', 'restore', 'rest-content-push' ] ),
+	environmentType: syncEnvironmentTypeSchema,
+	startedAt: z.string(),
+	finishedAt: z.string(),
+	status: z.enum( [ 'success', 'verified-with-warnings', 'failed' ] ),
+	detail: z.string(),
+	// Optional scope summary, e.g. selected paths, item counts, or the backup path created.
+	summary: z.record( z.string(), z.unknown() ).optional(),
+} );
+export type SyncDeploymentRecord = z.infer< typeof syncDeploymentRecordSchema >;
+
+// Automatic backup retention policy. Any limit left undefined is not enforced. The newest backup is
+// always kept regardless of policy so a push never deletes its own just-created backup.
+export const selfHostedSshBackupRetentionPolicySchema = z.object( {
+	maxCount: z.number().int().positive().optional(),
+	maxAgeInDays: z.number().positive().optional(),
+	maxTotalSizeInBytes: z.number().positive().optional(),
+} );
+export type SelfHostedSshBackupRetentionPolicy = z.infer<
+	typeof selfHostedSshBackupRetentionPolicySchema
+>;
+
+export const selfHostedSshPullEstimateSchema = z.object( {
+	includeDatabase: z.boolean(),
+	databaseSizeInBytes: z.number().nonnegative(),
+	wpContentSizeInBytes: z.number().nonnegative(),
+	estimatedSourceSizeInBytes: z.number().nonnegative(),
+	selectedPaths: z.array( z.string() ),
+} );
+export type SelfHostedSshPullEstimate = z.infer< typeof selfHostedSshPullEstimateSchema >;
+
 export const selfHostedSshPushPreflightSchema = z.object( {
 	archiveSizeInBytes: z.number().nonnegative(),
 	estimatedBackupSizeInBytes: z.number().nonnegative(),
@@ -340,6 +379,21 @@ export const selfHostedSshManagedExtensionSchema = z.object( {
 	updateVersion: z.string().nullable(),
 } );
 export type SelfHostedSshManagedExtension = z.infer< typeof selfHostedSshManagedExtensionSchema >;
+
+export const selfHostedSshAdvisorySeverityValues = [ 'info', 'warning', 'critical' ] as const;
+export const selfHostedSshAdvisorySchema = z.object( {
+	type: z.enum( [ 'plugin', 'theme', 'core' ] ),
+	slug: z.string(),
+	title: z.string(),
+	severity: z.enum( selfHostedSshAdvisorySeverityValues ),
+	// One of: 'outdated' (an update is available), 'removed' (pulled from the wordpress.org
+	// directory — a common security-removal signal), 'unknown' (could not be looked up).
+	kind: z.enum( [ 'outdated', 'removed', 'unknown' ] ),
+	installedVersion: z.string(),
+	availableVersion: z.string().nullable(),
+	detail: z.string(),
+} );
+export type SelfHostedSshAdvisory = z.infer< typeof selfHostedSshAdvisorySchema >;
 
 export const selfHostedSshManagementStatusSchema = z.object( {
 	coreVersion: z.string(),

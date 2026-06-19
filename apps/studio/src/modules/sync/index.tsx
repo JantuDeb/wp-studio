@@ -949,7 +949,7 @@ function ContentPushPickerModal( {
 	preview: ContentPushPreview | null;
 	onRequestClose: () => void;
 	onPreview: ( selectedItems: SelectedContentItem[] ) => void;
-	onPush: ( selectedItems: SelectedContentItem[], publish: boolean ) => void;
+	onPush: ( selectedItems: SelectedContentItem[], publish: boolean, approval?: string ) => void;
 	isProduction: boolean;
 } ) {
 	const { __ } = useI18n();
@@ -1134,7 +1134,13 @@ function ContentPushPickerModal( {
 								! hasPublishConfirmation
 							}
 							onClick={ () =>
-								hasPreviewForSelection ? onPush( selectedItems, publish ) : handlePreview()
+								hasPreviewForSelection
+									? onPush(
+											selectedItems,
+											publish,
+											requiresPublishConfirmation ? confirmation.trim() : undefined
+									  )
+									: handlePreview()
 							}
 						>
 							{ isPushing
@@ -1330,13 +1336,15 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 	const handlePushSelfHostedRestContent = async (
 		connectionId: string,
 		selectedItems: SelectedContentItem[],
-		publish: boolean
+		publish: boolean,
+		approval?: string
 	) => {
 		setPushingConnectionId( connectionId );
 		try {
 			const summary = await getIpcApi().pushSelfHostedRestContent( selectedSite.id, connectionId, {
 				publish,
 				selectedItems,
+				approval,
 			} );
 			const notificationTemplate = publish
 				? __(
@@ -2076,8 +2084,8 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 					onPreview={ ( selectedItems ) =>
 						handlePreviewSelfHostedRestContentPush( pickingConnectionId, selectedItems )
 					}
-					onPush={ ( selectedItems, publish ) =>
-						handlePushSelfHostedRestContent( pickingConnectionId, selectedItems, publish )
+					onPush={ ( selectedItems, publish, approval ) =>
+						handlePushSelfHostedRestContent( pickingConnectionId, selectedItems, publish, approval )
 					}
 				/>
 			) }
