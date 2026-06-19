@@ -142,6 +142,8 @@ const api: IpcApi = {
 		ipcRendererInvoke( 'getSelfHostedSshManagementStatus', localSiteId, connectionId ),
 	getSelfHostedSshAdvisories: ( localSiteId, connectionId ) =>
 		ipcRendererInvoke( 'getSelfHostedSshAdvisories', localSiteId, connectionId ),
+	detectSelfHostedServerStack: ( localSiteId, connectionId ) =>
+		ipcRendererInvoke( 'detectSelfHostedServerStack', localSiteId, connectionId ),
 	getSelfHostedSshDebugLog: ( localSiteId, connectionId ) =>
 		ipcRendererInvoke( 'getSelfHostedSshDebugLog', localSiteId, connectionId ),
 	downloadSelfHostedSshDebugLog: ( localSiteId, connectionId ) =>

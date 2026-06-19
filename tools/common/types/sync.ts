@@ -352,6 +352,28 @@ export const selfHostedSshVerificationSchema = z.object( {
 } );
 export type SelfHostedSshVerification = z.infer< typeof selfHostedSshVerificationSchema >;
 
+// Remote server stack detected over SSH. Drives the adaptive (Apache/nginx) server-config UI and
+// is persisted on the connection so the renderer can show capabilities without re-probing.
+export const selfHostedServerWebServerValues = [ 'apache', 'nginx', 'unknown' ] as const;
+export const selfHostedServerStackSchema = z.object( {
+	os: z.string(),
+	webServer: z.enum( selfHostedServerWebServerValues ),
+	webServerVersion: z.string().nullable(),
+	phpVersion: z.string().nullable(),
+	phpFpm: z.boolean(),
+	dbEngine: z.string().nullable(),
+	dbVersion: z.string().nullable(),
+	docroot: z.string().nullable(),
+	// Best-effort discovered config paths, e.g. the active vhost and the site .htaccess.
+	configPaths: z.object( {
+		vhost: z.string().nullable(),
+		htaccess: z.string().nullable(),
+	} ),
+	// True when the connecting user can run sudo non-interactively (gates reloads/cert issuance).
+	canSudo: z.boolean(),
+} );
+export type SelfHostedServerStack = z.infer< typeof selfHostedServerStackSchema >;
+
 export type SelfHostedSshProgress = {
 	localSiteId: string;
 	connectionId: string;

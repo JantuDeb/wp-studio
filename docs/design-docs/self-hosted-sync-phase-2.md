@@ -28,6 +28,24 @@ Explicitly **deprioritized**: recurring HTTP health checks (was 4.4) and CLI cre
 Concise checklist of what to build next, ordered by value. Each item follows the same Definition
 of Done (main process + IPC + renderer, typecheck, lint, focused tests, doc update).
 
+**Build order:** a shared foundation (8.0) first, then 8.1 → 8.2 → 8.3 layered on top, so stack
+detection, the Apache/nginx adapter, and the safe-config-edit primitive are written once and reused.
+Verification is unit tests (detection parsing + per-server command construction); live integration
+is deferred. Fresh provisioning (8.3) assumes a **pre-installed** web server + PHP + DB (no OS
+package installs).
+
+### 8.0 Shared foundation (build first)
+- [x] Stack detection over SSH → `{ os, webServer, webServerVersion, phpVersion, phpFpm, dbEngine,
+      dbVersion, docroot, configPaths, canSudo }`. `getServerStackProbeCommand` +
+      `parseServerStackProbe` (`self-hosted-server-stack.ts`) + `detectSelfHostedServerStack` IPC
+      handler. Unit-tested (Apache/nginx/MySQL/MariaDB, both-present, none-present).
+- [x] Web-server adapter (`getWebServerAdapter`) with Apache + nginx implementations sharing one
+      interface (test config, reload, reload PHP-FPM), sudo-aware.
+- [x] Safe-config-edit primitive (`getSafeConfigEditCommand`): backup → write (base64) → validate →
+      restore-on-failure, deterministic (injected timestamp), unit-tested.
+- [ ] Persist detected capabilities on the connection / app data for adaptive UI (pending; handler
+      currently returns the stack on demand).
+
 ### 8.1 Remote environment management (existing servers)
 - [ ] Report remote PHP version and available versions; switch PHP version (where the host allows).
 - [ ] Report DB engine/version (MySQL/MariaDB); show connection + size; safe upgrade guidance.
@@ -40,11 +58,12 @@ of Done (main process + IPC + renderer, typecheck, lint, focused tests, doc upda
 - [ ] Provision/renew Let's Encrypt certs (certbot) for Apache and nginx.
 - [ ] Configure HTTP→HTTPS redirect; verify the chain after issuing.
 
-### 8.3 Provision a fresh server / new remote site
-- [ ] Connect to a bare server over SSH and detect the stack (OS, web server, PHP, DB).
-- [ ] Install the WordPress stack if missing (web server + PHP + DB + WP-CLI).
-- [ ] Create a new site: vhost/server block, document root, database + user, `wp-config`.
-- [ ] Add a brand-new remote site as a sync target, then push a local Studio site into it.
+### 8.3 Provision a new remote site (on a pre-installed stack)
+- [ ] Connect over SSH and detect the stack; require web server + PHP + DB already present
+      (installing OS packages is out of scope for now).
+- [ ] Create a new site: vhost/server block, document root, database + user, `wp-config`, install
+      WordPress via WP-CLI.
+- [ ] Add the new remote site as a sync target, then push a local Studio site into it.
 
 ### 8.4 Add-site & connection UX
 - [ ] "Add remote site" flow that distinguishes "connect existing" vs "provision new".

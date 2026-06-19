@@ -43,6 +43,7 @@ import {
 	type SelfHostedSshManagementStatus,
 	type SelfHostedSshManagedExtension,
 	type SelfHostedSshAdvisory,
+	type SelfHostedServerStack,
 	type SyncDeploymentRecord,
 	type SelfHostedSshMaintenanceAction,
 	type SelfHostedSshDebugLog,
@@ -79,6 +80,7 @@ import {
 	rewriteMediaIdReferences,
 	type SyncMediaItem,
 } from './self-hosted-media-sync';
+import { getServerStackProbeCommand, parseServerStackProbe } from './self-hosted-server-stack';
 import {
 	deleteSyncConnectionCredentials,
 	hydrateSyncConnectionCredentials,
@@ -1447,6 +1449,31 @@ export async function getSelfHostedSshAdvisories(
 	return [ ...pluginAdvisories, ...themeAdvisories ].sort(
 		( a, b ) => severityRank[ a.severity ] - severityRank[ b.severity ]
 	);
+}
+
+/**
+ * Detect the remote server stack (OS, web server, PHP, DB, sudo) over SSH. This is the shared
+ * foundation (doc 8.0) for server-config management: the result drives the adaptive Apache/nginx UI
+ * and the per-server command building in 8.1–8.3.
+ */
+export async function detectSelfHostedServerStack(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string
+): Promise< SelfHostedServerStack > {
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+
+	const docroot = parsed.auth.remoteWordPressPath.replace( /\/+$/, '' );
+	const client = await connectSshClient( parsed );
+	try {
+		const output = await runConnectedSshCommand( client, getServerStackProbeCommand( docroot ) );
+		return parseServerStackProbe( output, docroot );
+	} finally {
+		client.end();
+	}
 }
 
 function validateMaintenanceSlug( slug: string ): string {
