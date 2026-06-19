@@ -45,7 +45,9 @@ import type {
 	SelfHostedSshMaintenanceAction,
 	SelfHostedSshDebugLog,
 	SelfHostedSshIncrementalPreview,
+	SelfHostedSshAdvisory,
 	SyncConnection,
+	SyncDeploymentRecord,
 	SyncSite,
 } from '@studio/common/types/sync';
 
@@ -187,6 +189,7 @@ function SelfHostedConnectionsList( {
 	onPushSshSite,
 	onManageSshBackups,
 	onManageSshSite,
+	onViewDeployments,
 	onPullConnectorSite,
 	onPushConnectorSite,
 	pushingConnectionId,
@@ -202,6 +205,7 @@ function SelfHostedConnectionsList( {
 	onPushSshSite: ( connection: SelfHostedSyncConnection ) => void;
 	onManageSshBackups: ( connection: SelfHostedSyncConnection ) => void;
 	onManageSshSite: ( connection: SelfHostedSyncConnection ) => void;
+	onViewDeployments: ( connection: SelfHostedSyncConnection ) => void;
 	onPullConnectorSite: ( connection: SelfHostedSyncConnection ) => void;
 	onPushConnectorSite: ( connection: SelfHostedSyncConnection ) => void;
 	pushingConnectionId: string | null;
@@ -325,6 +329,9 @@ function SelfHostedConnectionsList( {
 							>
 								{ __( 'Manage' ) }
 							</Button>
+							<Button variant="secondary" onClick={ () => onViewDeployments( connection ) }>
+								{ __( 'History' ) }
+							</Button>
 						</div>
 						{ connection.provider === 'self-hosted-ssh' &&
 							sshProgress[ connection.id ] &&
@@ -343,9 +350,149 @@ function SelfHostedConnectionsList( {
 	);
 }
 
+function SelfHostedDeploymentsModal( {
+	connection,
+	deployments,
+	isLoading,
+	onRequestClose,
+}: {
+	connection: SelfHostedSyncConnection;
+	deployments: SyncDeploymentRecord[] | null;
+	isLoading: boolean;
+	onRequestClose: () => void;
+} ) {
+	const { __ } = useI18n();
+
+	const statusLabel = ( status: SyncDeploymentRecord[ 'status' ] ): string => {
+		switch ( status ) {
+			case 'success':
+				return __( 'Success' );
+			case 'verified-with-warnings':
+				return __( 'Completed with warnings' );
+			case 'failed':
+				return __( 'Failed' );
+		}
+	};
+
+	const statusClass = ( status: SyncDeploymentRecord[ 'status' ] ): string => {
+		if ( status === 'failed' ) {
+			return 'text-frame-error';
+		}
+		if ( status === 'verified-with-warnings' ) {
+			return 'text-amber-500';
+		}
+		return 'text-frame-text-secondary';
+	};
+
+	return (
+		<Modal
+			className="w-[90%] max-w-[760px] max-h-[86vh] [&>div]:!p-0"
+			onRequestClose={ onRequestClose }
+			title={ __( 'Deployment history' ) }
+		>
+			<div className="px-8 pb-6">
+				<div className="text-frame-text-secondary text-sm mb-4">{ connection.siteUrl }</div>
+				{ isLoading || ! deployments ? (
+					<div className="flex items-center gap-2 py-8 text-frame-text-secondary">
+						<Spinner className="!m-0 [&>circle]:stroke-frame-text-secondary" />
+						{ __( 'Loading deployment history…' ) }
+					</div>
+				) : deployments.length === 0 ? (
+					<div className="py-8 text-frame-text-secondary">
+						{ __( 'No deployments have been recorded for this connection yet.' ) }
+					</div>
+				) : (
+					<ul className="flex flex-col gap-3 m-0">
+						{ deployments.map( ( record ) => (
+							<li
+								key={ record.id }
+								className="border border-frame-border rounded-sm p-3 flex flex-col gap-1"
+							>
+								<div className="flex items-center justify-between gap-3">
+									<span className="text-sm font-medium text-frame-text">{ record.operation }</span>
+									<span className={ `text-xs font-medium ${ statusClass( record.status ) }` }>
+										{ statusLabel( record.status ) }
+									</span>
+								</div>
+								<div className="text-xs text-frame-text-secondary">
+									{ format( new Date( record.startedAt ), 'MMM d, y, h:mm a' ) }
+								</div>
+								<div className="text-sm text-frame-text">{ record.detail }</div>
+							</li>
+						) ) }
+					</ul>
+				) }
+			</div>
+		</Modal>
+	);
+}
+
+function SelfHostedSshAdvisoriesPanel( {
+	advisories,
+	isLoading,
+}: {
+	advisories: SelfHostedSshAdvisory[] | null;
+	isLoading: boolean;
+} ) {
+	const { __ } = useI18n();
+
+	if ( isLoading ) {
+		return (
+			<div className="flex items-center gap-2 text-frame-text-secondary text-sm">
+				<Spinner className="!m-0 [&>circle]:stroke-frame-text-secondary" />
+				{ __( 'Checking plugins and themes for advisories…' ) }
+			</div>
+		);
+	}
+
+	if ( ! advisories ) {
+		return null;
+	}
+
+	if ( advisories.length === 0 ) {
+		return (
+			<div className="flex items-center gap-1 text-sm text-frame-text-secondary">
+				<Icon icon={ check } size={ 18 } />
+				{ __( 'No plugin or theme advisories found.' ) }
+			</div>
+		);
+	}
+
+	const critical = advisories.filter( ( advisory ) => advisory.severity === 'critical' );
+	const others = advisories.filter( ( advisory ) => advisory.severity !== 'critical' );
+
+	return (
+		<div className="flex flex-col gap-2" data-testid="self-hosted-advisories">
+			<div className="text-xs font-medium uppercase text-frame-text-secondary">
+				{ __( 'Security advisories' ) }
+			</div>
+			{ critical.length > 0 && (
+				<Notice status="error" isDismissible={ false }>
+					<ul className="m-0 list-disc ps-4">
+						{ critical.map( ( advisory ) => (
+							<li key={ `${ advisory.type }:${ advisory.slug }` }>{ advisory.detail }</li>
+						) ) }
+					</ul>
+				</Notice>
+			) }
+			{ others.length > 0 && (
+				<Notice status="warning" isDismissible={ false }>
+					<ul className="m-0 list-disc ps-4">
+						{ others.map( ( advisory ) => (
+							<li key={ `${ advisory.type }:${ advisory.slug }` }>{ advisory.detail }</li>
+						) ) }
+					</ul>
+				</Notice>
+			) }
+		</div>
+	);
+}
+
 function SelfHostedSshManagementModal( {
 	connection,
 	status,
+	advisories,
+	isLoadingAdvisories,
 	isLoading,
 	runningAction,
 	onRunAction,
@@ -357,6 +504,8 @@ function SelfHostedSshManagementModal( {
 }: {
 	connection: SelfHostedSshConnection;
 	status: SelfHostedSshManagementStatus | null;
+	advisories: SelfHostedSshAdvisory[] | null;
+	isLoadingAdvisories: boolean;
 	isLoading: boolean;
 	runningAction: string | null;
 	onRunAction: ( action: SelfHostedSshMaintenanceAction ) => void;
@@ -430,6 +579,10 @@ function SelfHostedSshManagementModal( {
 								</div>
 							) ) }
 						</div>
+						<SelfHostedSshAdvisoriesPanel
+							advisories={ advisories }
+							isLoading={ isLoadingAdvisories }
+						/>
 						<div className="flex flex-wrap gap-3">
 							<Button
 								variant="secondary"
@@ -949,12 +1102,19 @@ function ContentPushPickerModal( {
 	preview: ContentPushPreview | null;
 	onRequestClose: () => void;
 	onPreview: ( selectedItems: SelectedContentItem[] ) => void;
-	onPush: ( selectedItems: SelectedContentItem[], publish: boolean, approval?: string ) => void;
+	onPush: (
+		selectedItems: SelectedContentItem[],
+		publish: boolean,
+		approval?: string,
+		scheduledDate?: string
+	) => void;
 	isProduction: boolean;
 } ) {
 	const { __ } = useI18n();
 	const [ selectedKeys, setSelectedKeys ] = useState< Set< string > >( new Set() );
 	const [ publish, setPublish ] = useState( false );
+	const [ schedule, setSchedule ] = useState( false );
+	const [ scheduledLocal, setScheduledLocal ] = useState( '' );
 	const [ confirmation, setConfirmation ] = useState( '' );
 
 	useEffect( () => {
@@ -985,7 +1145,16 @@ function ContentPushPickerModal( {
 		.join( ',' );
 	const hasPreviewForSelection = Boolean( preview ) && previewKeyList === selectedKeyList;
 	const hasConflicts = hasPreviewForSelection && Boolean( preview?.summary.conflict );
-	const requiresPublishConfirmation = isProduction && publish;
+	// A scheduled publish is a future publish, so it goes through the same production approval gate.
+	const isPublishingOrScheduling = publish || schedule;
+	const parsedScheduledTime = schedule && scheduledLocal ? Date.parse( scheduledLocal ) : NaN;
+	const scheduledDateIso = Number.isNaN( parsedScheduledTime )
+		? undefined
+		: new Date( parsedScheduledTime ).toISOString();
+	// Render-time validity only requires a parseable date; the "must be in the future" rule is
+	// enforced authoritatively in the main process (calling Date.now() during render is disallowed).
+	const isScheduleValid = ! schedule || Boolean( scheduledDateIso );
+	const requiresPublishConfirmation = isProduction && isPublishingOrScheduling;
 	const hasPublishConfirmation = ! requiresPublishConfirmation || confirmation.trim() === 'PUBLISH';
 
 	const handlePreview = () => {
@@ -1098,15 +1267,42 @@ function ContentPushPickerModal( {
 					<CheckboxControl
 						label={ __( 'Publish selected content immediately' ) }
 						checked={ publish }
+						disabled={ schedule }
 						onChange={ setPublish }
 						__nextHasNoMarginBottom
 					/>
+					<div className="mt-3">
+						<CheckboxControl
+							label={ __( 'Schedule publication for a future date' ) }
+							checked={ schedule }
+							disabled={ publish }
+							onChange={ setSchedule }
+							__nextHasNoMarginBottom
+						/>
+						{ schedule && (
+							<div className="mt-2">
+								<TextControl
+									type="datetime-local"
+									label={ __( 'Publish date and time' ) }
+									value={ scheduledLocal }
+									onChange={ setScheduledLocal }
+								/>
+								<div className="mt-1 text-xs text-frame-text-secondary">
+									{ __( 'Must be a future date and time.' ) }
+								</div>
+							</div>
+						) }
+					</div>
 					{ requiresPublishConfirmation && (
 						<div className="mt-3">
 							<Notice status="warning" isDismissible={ false } className="mb-3">
-								{ __(
-									'Publishing changes production content immediately. Type PUBLISH to confirm.'
-								) }
+								{ schedule
+									? __(
+											'Scheduling changes production content for a future date. Type PUBLISH to confirm.'
+									  )
+									: __(
+											'Publishing changes production content immediately. Type PUBLISH to confirm.'
+									  ) }
 							</Notice>
 							<TextControl
 								label={ __( 'Confirmation' ) }
@@ -1131,14 +1327,16 @@ function ContentPushPickerModal( {
 								isPushing ||
 								selectedItems.length === 0 ||
 								hasConflicts ||
-								! hasPublishConfirmation
+								! hasPublishConfirmation ||
+								! isScheduleValid
 							}
 							onClick={ () =>
 								hasPreviewForSelection
 									? onPush(
 											selectedItems,
 											publish,
-											requiresPublishConfirmation ? confirmation.trim() : undefined
+											requiresPublishConfirmation ? confirmation.trim() : undefined,
+											scheduledDateIso
 									  )
 									: handlePreview()
 							}
@@ -1148,7 +1346,9 @@ function ContentPushPickerModal( {
 								: isPreviewing
 								? __( 'Previewing…' )
 								: hasPreviewForSelection
-								? publish
+								? schedule
+									? __( 'Schedule selected content' )
+									: publish
 									? __( 'Publish selected content' )
 									: __( 'Push selected content as drafts' )
 								: __( 'Preview selected content' ) }
@@ -1211,6 +1411,12 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 	const [ managementStatus, setManagementStatus ] =
 		useState< SelfHostedSshManagementStatus | null >( null );
 	const [ isLoadingManagementStatus, setIsLoadingManagementStatus ] = useState( false );
+	const [ advisories, setAdvisories ] = useState< SelfHostedSshAdvisory[] | null >( null );
+	const [ isLoadingAdvisories, setIsLoadingAdvisories ] = useState( false );
+	const [ deploymentsConnection, setDeploymentsConnection ] =
+		useState< SelfHostedSyncConnection | null >( null );
+	const [ deployments, setDeployments ] = useState< SyncDeploymentRecord[] | null >( null );
+	const [ isLoadingDeployments, setIsLoadingDeployments ] = useState( false );
 	const [ runningMaintenanceAction, setRunningMaintenanceAction ] = useState< string | null >(
 		null
 	);
@@ -1337,7 +1543,8 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 		connectionId: string,
 		selectedItems: SelectedContentItem[],
 		publish: boolean,
-		approval?: string
+		approval?: string,
+		scheduledDate?: string
 	) => {
 		setPushingConnectionId( connectionId );
 		try {
@@ -1345,8 +1552,13 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 				publish,
 				selectedItems,
 				approval,
+				scheduledDate,
 			} );
-			const notificationTemplate = publish
+			const notificationTemplate = scheduledDate
+				? __(
+						'Scheduled %1$d posts, %2$d pages, %3$d media items, %4$d categories, and %5$d tags.'
+				  )
+				: publish
 				? __(
 						'Published %1$d posts, %2$d pages, %3$d media items, %4$d categories, and %5$d tags.'
 				  )
@@ -1383,19 +1595,40 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 		const PULL_BUTTON_INDEX = 0;
 		const isFullPull = options.optionsToSync.includes( 'all' );
 		const includesDatabase = isFullPull || options.optionsToSync.includes( 'sqls' );
+
+		// Best-effort size estimate before the (potentially large) download. A failure to estimate
+		// must not block the pull, so fall back to no size line.
+		let estimateLine = '';
+		try {
+			const estimate = await getIpcApi().previewSelfHostedSshPull(
+				selectedSite.id,
+				connection.id,
+				options
+			);
+			estimateLine = sprintf(
+				/* translators: %s is a human-readable size, e.g. "120 MB". */
+				__( ' Estimated download: about %s.' ),
+				formatBackupSize( estimate.estimatedSourceSizeInBytes )
+			);
+		} catch {
+			estimateLine = '';
+		}
+
+		const baseDetail = isFullPull
+			? __(
+					'This full pull replaces local synced content and the local database with data from the configured WordPress path.'
+			  )
+			: includesDatabase
+			? __(
+					'Selected wp-content files will be merged into the local site, and the local database will be replaced.'
+			  )
+			: __(
+					'Selected wp-content files will be merged into the local site. Unselected local files will remain unchanged.'
+			  );
+
 		const { response } = await getIpcApi().showMessageBox( {
 			message: __( 'Pull selected remote data into Studio?' ),
-			detail: isFullPull
-				? __(
-						'This full pull replaces local synced content and the local database with data from the configured WordPress path.'
-				  )
-				: includesDatabase
-				? __(
-						'Selected wp-content files will be merged into the local site, and the local database will be replaced.'
-				  )
-				: __(
-						'Selected wp-content files will be merged into the local site. Unselected local files will remain unchanged.'
-				  ),
+			detail: baseDetail + estimateLine,
 			buttons: [ __( 'Pull to local' ), __( 'Cancel' ) ],
 			cancelId: CANCEL_BUTTON_INDEX,
 		} );
@@ -1642,7 +1875,13 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 			return;
 		}
 		try {
-			await deleteSelfHostedSshBackups( connection, backupsToDelete );
+			// Use the authoritative server-side retention policy: keep the five newest push backups.
+			// The main process guarantees the newest backup is never deleted and leaves pre-restore
+			// safety backups untouched.
+			await getIpcApi().applySelfHostedSshBackupRetention( selectedSite.id, connection.id, {
+				maxCount: 5,
+			} );
+			await handleManageSelfHostedSshBackups( connection );
 		} catch ( error ) {
 			getIpcApi().showErrorMessageBox( {
 				title: __( 'Failed to delete older backups' ),
@@ -1685,10 +1924,44 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 		}
 	};
 
+	const loadSelfHostedSshAdvisories = async ( connection: SelfHostedSshConnection ) => {
+		setIsLoadingAdvisories( true );
+		try {
+			setAdvisories(
+				await getIpcApi().getSelfHostedSshAdvisories( selectedSite.id, connection.id )
+			);
+		} catch {
+			// Advisories are best-effort (they depend on the WordPress.org directory). Failing to load
+			// them must not block the management dashboard, so show none rather than an error modal.
+			setAdvisories( [] );
+		} finally {
+			setIsLoadingAdvisories( false );
+		}
+	};
+
 	const handleManageSelfHostedSshSite = ( connection: SelfHostedSshConnection ) => {
 		setManagementConnection( connection );
 		setManagementStatus( null );
+		setAdvisories( null );
 		void loadSelfHostedSshManagementStatus( connection );
+		void loadSelfHostedSshAdvisories( connection );
+	};
+
+	const handleViewSelfHostedDeployments = async ( connection: SelfHostedSyncConnection ) => {
+		setDeploymentsConnection( connection );
+		setDeployments( null );
+		setIsLoadingDeployments( true );
+		try {
+			setDeployments( await getIpcApi().getSyncDeployments( selectedSite.id, connection.id ) );
+		} catch ( error ) {
+			getIpcApi().showErrorMessageBox( {
+				title: __( 'Failed to load deployment history' ),
+				message: error instanceof Error ? error.message : __( 'Please try again.' ),
+			} );
+			setDeploymentsConnection( null );
+		} finally {
+			setIsLoadingDeployments( false );
+		}
 	};
 
 	const getMaintenanceActionKey = ( action: SelfHostedSshMaintenanceAction ): string => {
@@ -1964,6 +2237,9 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 									handleManageSelfHostedSshSite( connection );
 								}
 							} }
+							onViewDeployments={ ( connection ) =>
+								void handleViewSelfHostedDeployments( connection )
+							}
 							onPullConnectorSite={ ( connection ) =>
 								void handlePullSelfHostedConnectorSite( connection )
 							}
@@ -2084,8 +2360,14 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 					onPreview={ ( selectedItems ) =>
 						handlePreviewSelfHostedRestContentPush( pickingConnectionId, selectedItems )
 					}
-					onPush={ ( selectedItems, publish, approval ) =>
-						handlePushSelfHostedRestContent( pickingConnectionId, selectedItems, publish, approval )
+					onPush={ ( selectedItems, publish, approval, scheduledDate ) =>
+						handlePushSelfHostedRestContent(
+							pickingConnectionId,
+							selectedItems,
+							publish,
+							approval,
+							scheduledDate
+						)
 					}
 				/>
 			) }
@@ -2133,6 +2415,8 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 				<SelfHostedSshManagementModal
 					connection={ managementConnection }
 					status={ managementStatus }
+					advisories={ advisories }
+					isLoadingAdvisories={ isLoadingAdvisories }
 					isLoading={ isLoadingManagementStatus }
 					runningAction={ runningMaintenanceAction }
 					onRequestClose={ () => {
@@ -2149,6 +2433,15 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 					onRunAction={ ( action ) =>
 						void handleSelfHostedSshMaintenanceAction( managementConnection, action )
 					}
+				/>
+			) }
+
+			{ deploymentsConnection && (
+				<SelfHostedDeploymentsModal
+					connection={ deploymentsConnection }
+					deployments={ deployments }
+					isLoading={ isLoadingDeployments }
+					onRequestClose={ () => setDeploymentsConnection( null ) }
 				/>
 			) }
 

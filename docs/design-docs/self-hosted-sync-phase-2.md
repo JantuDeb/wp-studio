@@ -456,6 +456,23 @@ Also hardened: `pushSelfHostedSshSite` now enforces the disk-space preflight in 
 (refuses the push before upload when the archive + scoped backup + 100 MB margin exceed available
 remote space), so the block holds even if the renderer preflight is bypassed.
 
+### Renderer surfaces (wiring the new backends into the UI)
+
+The capabilities below were initially built as main-process handlers + IPC/preload only. They are
+now surfaced in the Sync tab's self-hosted UI (`apps/studio/src/modules/sync/index.tsx`):
+
+- **Security advisories** — `SelfHostedSshAdvisoriesPanel` inside the management modal, fetched
+  alongside the status (critical = removed-from-directory, warning = outdated).
+- **Deployment history** — a per-connection **History** button opens `SelfHostedDeploymentsModal`
+  listing recorded pushes/restores with status and timestamp.
+- **Pull size estimate** — the SSH pull confirmation dialog now shows the estimated download size
+  from `previewSelfHostedSshPull` (best-effort; never blocks the pull).
+- **Backup retention** — the backups modal's "Keep latest 5" now calls the authoritative
+  `applySelfHostedSshBackupRetention` (`maxCount: 5`) instead of a renderer-side slice.
+- **Scheduled publishing** — the content-push modal has a "Schedule publication" toggle +
+  `datetime-local` picker; scheduling routes through the production approval gate and sends
+  `scheduledDate` to `pushSelfHostedRestContent`.
+
 ### 4. Operations And Security
 
 - [x] 4.1 Remote pull archive-size estimate before download (`previewSelfHostedSshPull`): reports
