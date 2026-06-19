@@ -152,6 +152,12 @@ const api: IpcApi = {
 		ipcRendererInvoke( 'reloadSelfHostedWebServer', localSiteId, connectionId, options ),
 	getSelfHostedPhpVersions: ( localSiteId, connectionId ) =>
 		ipcRendererInvoke( 'getSelfHostedPhpVersions', localSiteId, connectionId ),
+	getSelfHostedSslStatus: ( localSiteId, connectionId ) =>
+		ipcRendererInvoke( 'getSelfHostedSslStatus', localSiteId, connectionId ),
+	provisionSelfHostedSsl: ( localSiteId, connectionId, options ) =>
+		ipcRendererInvoke( 'provisionSelfHostedSsl', localSiteId, connectionId, options ),
+	renewSelfHostedSsl: ( localSiteId, connectionId ) =>
+		ipcRendererInvoke( 'renewSelfHostedSsl', localSiteId, connectionId ),
 	getSelfHostedSshDebugLog: ( localSiteId, connectionId ) =>
 		ipcRendererInvoke( 'getSelfHostedSshDebugLog', localSiteId, connectionId ),
 	downloadSelfHostedSshDebugLog: ( localSiteId, connectionId ) =>

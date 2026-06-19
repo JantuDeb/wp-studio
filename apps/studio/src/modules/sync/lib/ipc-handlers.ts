@@ -46,6 +46,7 @@ import {
 	type SelfHostedServerStack,
 	type SelfHostedHtaccess,
 	type SelfHostedPhpVersions,
+	type SelfHostedSslStatus,
 	type SyncDeploymentRecord,
 	type SelfHostedSshMaintenanceAction,
 	type SelfHostedSshDebugLog,
@@ -88,6 +89,13 @@ import {
 	getWebServerAdapter,
 	parseServerStackProbe,
 } from './self-hosted-server-stack';
+import {
+	assertValidDomain,
+	getCertbotIssueCommand,
+	getCertbotRenewCommand,
+	getSslProbeCommand,
+	parseSslProbe,
+} from './self-hosted-ssl';
 import {
 	deleteSyncConnectionCredentials,
 	hydrateSyncConnectionCredentials,
@@ -1658,6 +1666,133 @@ export async function getSelfHostedPhpVersions(
 			available.add( current );
 		}
 		return { current, available: [ ...available ].sort() };
+	} finally {
+		client.end();
+	}
+}
+
+function getConnectionHost( siteUrl: string ): string {
+	return new URL( siteUrl ).hostname;
+}
+
+/**
+ * Detect the live TLS certificate for the connection's domain (doc 8.2): issuer, covered domains,
+ * validity window, days-until-expiry, and whether certbot is installed for issue/renew.
+ */
+export async function getSelfHostedSslStatus(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string,
+	now: number = Date.now()
+): Promise< SelfHostedSslStatus > {
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+	const host = getConnectionHost( parsed.siteUrl );
+
+	const client = await connectSshClient( parsed );
+	try {
+		const output = await runConnectedSshCommand( client, getSslProbeCommand( host ) );
+		return parseSslProbe( output, now );
+	} finally {
+		client.end();
+	}
+}
+
+/**
+ * Provision (or renew/extend) a Let's Encrypt certificate via certbot's web-server plugin (doc 8.2)
+ * and optionally configure the HTTP→HTTPS redirect. Validates the web-server config and reloads
+ * afterward, and verifies the resulting certificate covers the requested domains. Disabled for
+ * production connections; requires certbot on the host. Domains/email are validated before any shell
+ * command is built.
+ */
+export async function provisionSelfHostedSsl(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string,
+	options: { domains?: string[]; email: string; redirect?: boolean; now?: number }
+): Promise< { ssl: SelfHostedSslStatus; covered: boolean } > {
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+	if ( parsed.environmentType === 'production' ) {
+		throw new Error( 'SSL provisioning is disabled for production connections.' );
+	}
+
+	const host = getConnectionHost( parsed.siteUrl );
+	const domains = ( options.domains?.length ? options.domains : [ host ] ).map( assertValidDomain );
+
+	const client = await connectSshClient( parsed );
+	try {
+		const stack = await detectStackOverClient( client, parsed );
+		if ( stack.webServer === 'unknown' ) {
+			throw new Error( 'Could not detect Apache or nginx on the remote server.' );
+		}
+		// certbot presence check.
+		const certbotCheck = await runConnectedSshCommand(
+			client,
+			'command -v certbot >/dev/null 2>&1 && printf 1 || printf 0'
+		);
+		if ( certbotCheck.trim() !== '1' ) {
+			throw new Error( 'certbot is not installed on the remote server.' );
+		}
+
+		await runConnectedSshCommand(
+			client,
+			getCertbotIssueCommand( {
+				webServer: stack.webServer,
+				domains,
+				email: options.email,
+				redirect: options.redirect ?? true,
+				canSudo: stack.canSudo,
+			} )
+		);
+
+		// Validate and reload so the new vhost/redirect takes effect.
+		const adapter = getWebServerAdapter( stack.webServer, stack.canSudo );
+		await runConnectedSshCommand( client, adapter.testConfigCommand() );
+		await runConnectedSshCommand( client, adapter.reloadCommand() );
+
+		const ssl = parseSslProbe(
+			await runConnectedSshCommand( client, getSslProbeCommand( host ) ),
+			options.now ?? Date.now()
+		);
+		const covered = domains.every(
+			( domain ) => ssl.domains.includes( domain ) || ssl.subject?.includes( domain )
+		);
+		return { ssl, covered };
+	} finally {
+		client.end();
+	}
+}
+
+/** Renew near-expiry Let's Encrypt certificates via `certbot renew` (doc 8.2). Prod-gated. */
+export async function renewSelfHostedSsl(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string,
+	now: number = Date.now()
+): Promise< SelfHostedSslStatus > {
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+	if ( parsed.environmentType === 'production' ) {
+		throw new Error( 'SSL renewal is disabled for production connections.' );
+	}
+
+	const host = getConnectionHost( parsed.siteUrl );
+	const client = await connectSshClient( parsed );
+	try {
+		const stack = await detectStackOverClient( client, parsed );
+		await runConnectedSshCommand( client, getCertbotRenewCommand( stack.canSudo ) );
+		if ( stack.webServer !== 'unknown' ) {
+			const adapter = getWebServerAdapter( stack.webServer, stack.canSudo );
+			await runConnectedSshCommand( client, adapter.reloadCommand() );
+		}
+		return parseSslProbe( await runConnectedSshCommand( client, getSslProbeCommand( host ) ), now );
 	} finally {
 		client.end();
 	}

@@ -59,10 +59,16 @@ package installs).
 - [ ] Active PHP-version *switching* deferred — host-specific and risky; the panel reports installed
       versions but does not auto-switch yet.
 
-### 8.2 SSL / TLS
-- [ ] Detect current certificate (issuer, domains, expiry).
-- [ ] Provision/renew Let's Encrypt certs (certbot) for Apache and nginx.
-- [ ] Configure HTTP→HTTPS redirect; verify the chain after issuing.
+### 8.2 SSL / TLS — done
+- [x] Detect current certificate (issuer, subject, SAN domains, validity, days-to-expiry, certbot
+      availability) via `getSslProbeCommand`/`parseSslProbe` + `getSelfHostedSslStatus`.
+- [x] Provision/renew Let's Encrypt certs via certbot's `--apache`/`--nginx` plugin
+      (`provisionSelfHostedSsl`, `renewSelfHostedSsl`); domains/email validated to prevent shell
+      injection; prod-gated; requires certbot on the host.
+- [x] Configure HTTP→HTTPS redirect (`--redirect`); validate + reload the web server after issuing;
+      verify the new cert covers the requested domains.
+- [x] Renderer UI: SSL section in the Server panel (status, contact email, Enable HTTPS / Renew).
+- [x] Unit tests for probe parsing, certbot command building, and domain/email validation.
 
 ### 8.3 Provision a new remote site (on a pre-installed stack)
 - [ ] Connect over SSH and detect the stack; require web server + PHP + DB already present

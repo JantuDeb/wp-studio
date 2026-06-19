@@ -388,6 +388,23 @@ export const selfHostedPhpVersionsSchema = z.object( {
 } );
 export type SelfHostedPhpVersions = z.infer< typeof selfHostedPhpVersionsSchema >;
 
+// SSL/TLS status for the connection's domain (doc 8.2).
+export const selfHostedSslStatusSchema = z.object( {
+	// True when an HTTPS connection to the site presented a certificate.
+	hasCertificate: z.boolean(),
+	issuer: z.string().nullable(),
+	subject: z.string().nullable(),
+	// Subject Alternative Name domains covered by the cert.
+	domains: z.array( z.string() ),
+	validFrom: z.string().nullable(),
+	validTo: z.string().nullable(),
+	daysUntilExpiry: z.number().nullable(),
+	isExpired: z.boolean(),
+	// Whether `certbot` is installed on the host (gates issue/renew).
+	certbotAvailable: z.boolean(),
+} );
+export type SelfHostedSslStatus = z.infer< typeof selfHostedSslStatusSchema >;
+
 export type SelfHostedSshProgress = {
 	localSiteId: string;
 	connectionId: string;

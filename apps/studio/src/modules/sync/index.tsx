@@ -49,6 +49,7 @@ import type {
 	SelfHostedServerStack,
 	SelfHostedPhpVersions,
 	SelfHostedHtaccess,
+	SelfHostedSslStatus,
 	SyncConnection,
 	SyncDeploymentRecord,
 	SyncSite,
@@ -435,23 +436,32 @@ function SelfHostedServerPanel( {
 	serverStack,
 	phpVersions,
 	htaccess,
+	sslStatus,
 	isLoading,
 	isSavingHtaccess,
+	isProvisioningSsl,
 	onSaveHtaccess,
 	onReloadWebServer,
+	onProvisionSsl,
+	onRenewSsl,
 }: {
 	connection: SelfHostedSshConnection;
 	serverStack: SelfHostedServerStack | null;
 	phpVersions: SelfHostedPhpVersions | null;
 	htaccess: SelfHostedHtaccess | null;
+	sslStatus: SelfHostedSslStatus | null;
 	isLoading: boolean;
 	isSavingHtaccess: boolean;
+	isProvisioningSsl: boolean;
 	onSaveHtaccess: ( content: string ) => void;
 	onReloadWebServer: () => void;
+	onProvisionSsl: ( email: string ) => void;
+	onRenewSsl: () => void;
 } ) {
 	const { __ } = useI18n();
 	const isProduction = connection.environmentType === 'production';
 	const [ htaccessDraft, setHtaccessDraft ] = useState( '' );
+	const [ sslEmail, setSslEmail ] = useState( '' );
 
 	useEffect( () => {
 		setHtaccessDraft( htaccess?.content ?? '' );
@@ -555,6 +565,77 @@ function SelfHostedServerPanel( {
 					{ __( 'This server runs nginx, which does not use .htaccess files.' ) }
 				</Notice>
 			) }
+
+			<div className="flex flex-col gap-2 border-t border-frame-border pt-3">
+				<div className="text-xs font-medium uppercase text-frame-text-secondary">
+					{ __( 'SSL / TLS' ) }
+				</div>
+				{ ! sslStatus ? (
+					<div className="text-sm text-frame-text-secondary">
+						{ __( 'Certificate status unavailable.' ) }
+					</div>
+				) : sslStatus.hasCertificate ? (
+					<div className="text-sm text-frame-text">
+						{ sslStatus.isExpired
+							? __( 'Certificate has expired.' )
+							: sslStatus.daysUntilExpiry !== null
+							? sprintf(
+									/* translators: %1$s issuer, %2$d days until expiry. */
+									__( 'Issued by %1$s · expires in %2$d days.' ),
+									sslStatus.issuer ?? __( 'unknown' ),
+									sslStatus.daysUntilExpiry
+							  )
+							: __( 'Certificate present.' ) }
+						{ sslStatus.domains.length > 0 && (
+							<div className="text-xs text-frame-text-secondary mt-1">
+								{ sslStatus.domains.join( ', ' ) }
+							</div>
+						) }
+					</div>
+				) : (
+					<div className="text-sm text-frame-text-secondary">
+						{ __( 'No HTTPS certificate detected.' ) }
+					</div>
+				) }
+
+				{ isProduction ? (
+					<Notice status="info" isDismissible={ false }>
+						{ __( 'SSL changes are disabled for production connections.' ) }
+					</Notice>
+				) : ! sslStatus?.certbotAvailable ? (
+					<Notice status="info" isDismissible={ false }>
+						{ __( 'Install certbot on the remote server to issue or renew certificates.' ) }
+					</Notice>
+				) : (
+					<div className="flex flex-col gap-2">
+						<TextControl
+							type="email"
+							label={ __( 'Contact email (for Let’s Encrypt)' ) }
+							value={ sslEmail }
+							onChange={ setSslEmail }
+							disabled={ isProvisioningSsl }
+						/>
+						<div className="flex gap-3 justify-end">
+							{ sslStatus?.hasCertificate && (
+								<Button variant="secondary" disabled={ isProvisioningSsl } onClick={ onRenewSsl }>
+									{ isProvisioningSsl ? __( 'Working…' ) : __( 'Renew certificate' ) }
+								</Button>
+							) }
+							<Button
+								variant="primary"
+								disabled={ isProvisioningSsl || ! sslEmail.trim() }
+								onClick={ () => onProvisionSsl( sslEmail.trim() ) }
+							>
+								{ isProvisioningSsl
+									? __( 'Working…' )
+									: sslStatus?.hasCertificate
+									? __( 'Reissue & enable HTTPS' )
+									: __( 'Enable HTTPS' ) }
+							</Button>
+						</div>
+					</div>
+				) }
+			</div>
 		</div>
 	);
 }
@@ -628,10 +709,14 @@ function SelfHostedSshManagementModal( {
 	serverStack,
 	phpVersions,
 	htaccess,
+	sslStatus,
 	isLoadingServer,
 	isSavingHtaccess,
+	isProvisioningSsl,
 	onSaveHtaccess,
 	onReloadWebServer,
+	onProvisionSsl,
+	onRenewSsl,
 	isLoading,
 	runningAction,
 	onRunAction,
@@ -648,10 +733,14 @@ function SelfHostedSshManagementModal( {
 	serverStack: SelfHostedServerStack | null;
 	phpVersions: SelfHostedPhpVersions | null;
 	htaccess: SelfHostedHtaccess | null;
+	sslStatus: SelfHostedSslStatus | null;
 	isLoadingServer: boolean;
 	isSavingHtaccess: boolean;
+	isProvisioningSsl: boolean;
 	onSaveHtaccess: ( content: string ) => void;
 	onReloadWebServer: () => void;
+	onProvisionSsl: ( email: string ) => void;
+	onRenewSsl: () => void;
 	isLoading: boolean;
 	runningAction: string | null;
 	onRunAction: ( action: SelfHostedSshMaintenanceAction ) => void;
@@ -734,10 +823,14 @@ function SelfHostedSshManagementModal( {
 							serverStack={ serverStack }
 							phpVersions={ phpVersions }
 							htaccess={ htaccess }
+							sslStatus={ sslStatus }
 							isLoading={ isLoadingServer }
 							isSavingHtaccess={ isSavingHtaccess }
+							isProvisioningSsl={ isProvisioningSsl }
 							onSaveHtaccess={ onSaveHtaccess }
 							onReloadWebServer={ onReloadWebServer }
+							onProvisionSsl={ onProvisionSsl }
+							onRenewSsl={ onRenewSsl }
 						/>
 						<div className="flex flex-wrap gap-3">
 							<Button
@@ -1572,8 +1665,10 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 	const [ serverStack, setServerStack ] = useState< SelfHostedServerStack | null >( null );
 	const [ phpVersions, setPhpVersions ] = useState< SelfHostedPhpVersions | null >( null );
 	const [ htaccess, setHtaccess ] = useState< SelfHostedHtaccess | null >( null );
+	const [ sslStatus, setSslStatus ] = useState< SelfHostedSslStatus | null >( null );
 	const [ isLoadingServer, setIsLoadingServer ] = useState( false );
 	const [ isSavingHtaccess, setIsSavingHtaccess ] = useState( false );
+	const [ isProvisioningSsl, setIsProvisioningSsl ] = useState( false );
 	const [ deploymentsConnection, setDeploymentsConnection ] =
 		useState< SelfHostedSyncConnection | null >( null );
 	const [ deployments, setDeployments ] = useState< SyncDeploymentRecord[] | null >( null );
@@ -2103,19 +2198,68 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 	const loadSelfHostedServerPanel = async ( connection: SelfHostedSshConnection ) => {
 		setIsLoadingServer( true );
 		try {
-			const [ stack, php, htaccessResult ] = await Promise.all( [
+			const [ stack, php, htaccessResult, ssl ] = await Promise.all( [
 				getIpcApi().detectSelfHostedServerStack( selectedSite.id, connection.id ),
 				getIpcApi().getSelfHostedPhpVersions( selectedSite.id, connection.id ),
 				getIpcApi().getSelfHostedHtaccess( selectedSite.id, connection.id ),
+				getIpcApi()
+					.getSelfHostedSslStatus( selectedSite.id, connection.id )
+					.catch( () => null ),
 			] );
 			setServerStack( stack );
 			setPhpVersions( php );
 			setHtaccess( htaccessResult );
+			setSslStatus( ssl );
 		} catch {
 			// Server-config detection is best-effort and must not block the management dashboard.
 			setServerStack( null );
 		} finally {
 			setIsLoadingServer( false );
+		}
+	};
+
+	const handleProvisionSelfHostedSsl = async (
+		connection: SelfHostedSshConnection,
+		email: string
+	) => {
+		setIsProvisioningSsl( true );
+		try {
+			const result = await getIpcApi().provisionSelfHostedSsl( selectedSite.id, connection.id, {
+				email,
+				redirect: true,
+			} );
+			setSslStatus( result.ssl );
+			getIpcApi().showNotification( {
+				title: result.covered ? __( 'HTTPS enabled' ) : __( 'Certificate issued with warnings' ),
+				body: result.covered
+					? __( 'A Let’s Encrypt certificate was installed and HTTPS redirect configured.' )
+					: __( 'The certificate was issued but may not cover all requested domains.' ),
+			} );
+		} catch ( error ) {
+			getIpcApi().showErrorMessageBox( {
+				title: __( 'Failed to enable HTTPS' ),
+				message: error instanceof Error ? error.message : __( 'Please try again.' ),
+			} );
+		} finally {
+			setIsProvisioningSsl( false );
+		}
+	};
+
+	const handleRenewSelfHostedSsl = async ( connection: SelfHostedSshConnection ) => {
+		setIsProvisioningSsl( true );
+		try {
+			setSslStatus( await getIpcApi().renewSelfHostedSsl( selectedSite.id, connection.id ) );
+			getIpcApi().showNotification( {
+				title: __( 'Certificate renewed' ),
+				body: __( 'Near-expiry certificates were renewed and the web server reloaded.' ),
+			} );
+		} catch ( error ) {
+			getIpcApi().showErrorMessageBox( {
+				title: __( 'Failed to renew certificate' ),
+				message: error instanceof Error ? error.message : __( 'Please try again.' ),
+			} );
+		} finally {
+			setIsProvisioningSsl( false );
 		}
 	};
 
@@ -2165,6 +2309,7 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 		setServerStack( null );
 		setPhpVersions( null );
 		setHtaccess( null );
+		setSslStatus( null );
 		void loadSelfHostedSshManagementStatus( connection );
 		void loadSelfHostedSshAdvisories( connection );
 		void loadSelfHostedServerPanel( connection );
@@ -2643,12 +2788,18 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 					serverStack={ serverStack }
 					phpVersions={ phpVersions }
 					htaccess={ htaccess }
+					sslStatus={ sslStatus }
 					isLoadingServer={ isLoadingServer }
 					isSavingHtaccess={ isSavingHtaccess }
+					isProvisioningSsl={ isProvisioningSsl }
 					onSaveHtaccess={ ( content ) =>
 						void handleSaveSelfHostedHtaccess( managementConnection, content )
 					}
 					onReloadWebServer={ () => void handleReloadSelfHostedWebServer( managementConnection ) }
+					onProvisionSsl={ ( email ) =>
+						void handleProvisionSelfHostedSsl( managementConnection, email )
+					}
+					onRenewSsl={ () => void handleRenewSelfHostedSsl( managementConnection ) }
 					isLoading={ isLoadingManagementStatus }
 					runningAction={ runningMaintenanceAction }
 					onRequestClose={ () => {
