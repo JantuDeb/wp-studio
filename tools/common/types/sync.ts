@@ -374,6 +374,13 @@ export const selfHostedServerStackSchema = z.object( {
 } );
 export type SelfHostedServerStack = z.infer< typeof selfHostedServerStackSchema >;
 
+export const selfHostedHtaccessSchema = z.object( {
+	exists: z.boolean(),
+	path: z.string(),
+	content: z.string(),
+} );
+export type SelfHostedHtaccess = z.infer< typeof selfHostedHtaccessSchema >;
+
 export type SelfHostedSshProgress = {
 	localSiteId: string;
 	connectionId: string;

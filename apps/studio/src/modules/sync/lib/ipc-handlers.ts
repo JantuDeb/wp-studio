@@ -44,6 +44,7 @@ import {
 	type SelfHostedSshManagedExtension,
 	type SelfHostedSshAdvisory,
 	type SelfHostedServerStack,
+	type SelfHostedHtaccess,
 	type SyncDeploymentRecord,
 	type SelfHostedSshMaintenanceAction,
 	type SelfHostedSshDebugLog,
@@ -80,7 +81,12 @@ import {
 	rewriteMediaIdReferences,
 	type SyncMediaItem,
 } from './self-hosted-media-sync';
-import { getServerStackProbeCommand, parseServerStackProbe } from './self-hosted-server-stack';
+import {
+	getSafeConfigEditCommand,
+	getServerStackProbeCommand,
+	getWebServerAdapter,
+	parseServerStackProbe,
+} from './self-hosted-server-stack';
 import {
 	deleteSyncConnectionCredentials,
 	hydrateSyncConnectionCredentials,
@@ -1471,6 +1477,93 @@ export async function detectSelfHostedServerStack(
 	try {
 		const output = await runConnectedSshCommand( client, getServerStackProbeCommand( docroot ) );
 		return parseServerStackProbe( output, docroot );
+	} finally {
+		client.end();
+	}
+}
+
+function getSelfHostedHtaccessPath( connection: SelfHostedSshConnectionWithAuth ): string {
+	return `${ connection.auth.remoteWordPressPath.replace( /\/+$/, '' ) }/.htaccess`;
+}
+
+/**
+ * Read the remote site's root `.htaccess` (doc 8.1). Returns empty content when the file does not
+ * exist so the renderer can offer to create one.
+ */
+export async function getSelfHostedHtaccess(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string
+): Promise< SelfHostedHtaccess > {
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+	const htaccessPath = getSelfHostedHtaccessPath( parsed );
+
+	const client = await connectSshClient( parsed );
+	try {
+		const output = await runConnectedSshCommand(
+			client,
+			`if test -f ${ quoteRemoteShellArg(
+				htaccessPath
+			) }; then printf '1\\n'; cat ${ quoteRemoteShellArg( htaccessPath ) }; else printf '0\\n'; fi`
+		);
+		const newlineIndex = output.indexOf( '\n' );
+		const existsFlag = output.slice( 0, newlineIndex ).trim();
+		const content = newlineIndex >= 0 ? output.slice( newlineIndex + 1 ) : '';
+		return {
+			exists: existsFlag === '1',
+			path: htaccessPath,
+			content: existsFlag === '1' ? content : '',
+		};
+	} finally {
+		client.end();
+	}
+}
+
+/**
+ * Write the remote site's root `.htaccess` (doc 8.1) through the safe-config-edit primitive: the
+ * previous file is backed up, the new content written, the web-server config validated, and the
+ * backup restored automatically if validation fails. Disabled for production connections and for
+ * non-Apache servers (nginx does not use `.htaccess`).
+ */
+export async function updateSelfHostedHtaccess(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string,
+	content: string,
+	now: number = Date.now()
+): Promise< { backupPath: string } > {
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+	if ( parsed.environmentType === 'production' ) {
+		throw new Error( 'Editing .htaccess is disabled for production connections.' );
+	}
+
+	const client = await connectSshClient( parsed );
+	try {
+		const stack = parseServerStackProbe(
+			await runConnectedSshCommand(
+				client,
+				getServerStackProbeCommand( parsed.auth.remoteWordPressPath.replace( /\/+$/, '' ) )
+			),
+			parsed.auth.remoteWordPressPath
+		);
+		if ( stack.webServer === 'nginx' ) {
+			throw new Error( 'This server runs nginx, which does not use .htaccess files.' );
+		}
+		const adapter = getWebServerAdapter( 'apache', stack.canSudo );
+		const { command, backupPath } = getSafeConfigEditCommand( {
+			targetPath: getSelfHostedHtaccessPath( parsed ),
+			contentBase64: Buffer.from( content, 'utf8' ).toString( 'base64' ),
+			testConfigCommand: adapter.testConfigCommand(),
+			timestamp: now,
+		} );
+		await runConnectedSshCommand( client, command );
+		return { backupPath };
 	} finally {
 		client.end();
 	}

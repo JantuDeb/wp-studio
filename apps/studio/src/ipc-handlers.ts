@@ -195,6 +195,8 @@ export {
 	clearSyncOperation,
 	connectWpcomSites,
 	detectSelfHostedServerStack,
+	getSelfHostedHtaccess,
+	updateSelfHostedHtaccess,
 	deleteSelfHostedSshBackup,
 	deleteSyncConnection,
 	disconnectWpcomSites,

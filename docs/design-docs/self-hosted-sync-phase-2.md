@@ -47,11 +47,16 @@ package installs).
       currently returns the stack on demand).
 
 ### 8.1 Remote environment management (existing servers)
-- [ ] Report remote PHP version and available versions; switch PHP version (where the host allows).
-- [ ] Report DB engine/version (MySQL/MariaDB); show connection + size; safe upgrade guidance.
-- [ ] Manage `.htaccess` (Apache) / rewrite rules: view, edit with backup, validate, restore.
-- [ ] Detect web server (Apache vs nginx) and adapt all server-config actions to both.
-- [ ] View/reload web-server config and restart PHP-FPM where permitted.
+- [x] Report remote PHP version (via stack detection, 8.0). _Switching PHP version: pending._
+- [x] Report DB engine/version (MySQL/MariaDB) via stack detection. _Size/upgrade guidance: pending._
+- [x] Manage `.htaccess` (Apache): view (`getSelfHostedHtaccess`) and edit with backup + validate +
+      auto-restore (`updateSelfHostedHtaccess`, via the safe-config-edit primitive). Disabled for
+      production and for nginx hosts.
+- [x] Detect web server (Apache vs nginx) and adapt actions (8.0 adapter).
+- [ ] View/reload web-server config and restart PHP-FPM where permitted (adapter methods exist;
+      need IPC handlers + UI).
+- [ ] Switch PHP version where the host allows.
+- [ ] Renderer UI: a "Server" panel surfacing the detected stack and the `.htaccess` editor.
 
 ### 8.2 SSL / TLS
 - [ ] Detect current certificate (issuer, domains, expiry).

@@ -144,6 +144,10 @@ const api: IpcApi = {
 		ipcRendererInvoke( 'getSelfHostedSshAdvisories', localSiteId, connectionId ),
 	detectSelfHostedServerStack: ( localSiteId, connectionId ) =>
 		ipcRendererInvoke( 'detectSelfHostedServerStack', localSiteId, connectionId ),
+	getSelfHostedHtaccess: ( localSiteId, connectionId ) =>
+		ipcRendererInvoke( 'getSelfHostedHtaccess', localSiteId, connectionId ),
+	updateSelfHostedHtaccess: ( localSiteId, connectionId, content ) =>
+		ipcRendererInvoke( 'updateSelfHostedHtaccess', localSiteId, connectionId, content ),
 	getSelfHostedSshDebugLog: ( localSiteId, connectionId ) =>
 		ipcRendererInvoke( 'getSelfHostedSshDebugLog', localSiteId, connectionId ),
 	downloadSelfHostedSshDebugLog: ( localSiteId, connectionId ) =>
