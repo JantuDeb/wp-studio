@@ -4,6 +4,57 @@
 
 This document started as the Phase 2 connection checklist and now tracks the complete self-hosted sync proof of concept. WordPress.com and Pressable sync remain available through the existing provider and UI path.
 
+## Product Vision
+
+**Manage the full lifecycle of WordPress production servers from Studio — without leaving the app.**
+
+The workflow Studio should own end to end:
+
+1. Develop a site locally in Studio.
+2. Connect to a production server (SSH, connector plugin, or REST) — or provision a fresh one.
+3. Push local → prod: full sync, database, files, or content in batches; safe backups + restore.
+4. Author posts/pages locally and deploy them to prod in batches (drafts, publish, or scheduled).
+5. Operate the remote site: update WordPress core, plugins, themes; manage PHP/DB versions;
+   configure SSL, web server (Apache **and** nginx), and `.htaccess`/rewrite rules.
+
+Sync, batched content deployment, backups/restore, and core/plugin/theme updates already work
+(see sections 1–7 below). The next phase is **server lifecycle + provisioning** (Section 8).
+
+Explicitly **deprioritized**: recurring HTTP health checks (was 4.4) and CLI credential access
+(was 6.2). Both remain documented but are not on the near-term path.
+
+## Next Up — Server Lifecycle & Provisioning (Section 8)
+
+Concise checklist of what to build next, ordered by value. Each item follows the same Definition
+of Done (main process + IPC + renderer, typecheck, lint, focused tests, doc update).
+
+### 8.1 Remote environment management (existing servers)
+- [ ] Report remote PHP version and available versions; switch PHP version (where the host allows).
+- [ ] Report DB engine/version (MySQL/MariaDB); show connection + size; safe upgrade guidance.
+- [ ] Manage `.htaccess` (Apache) / rewrite rules: view, edit with backup, validate, restore.
+- [ ] Detect web server (Apache vs nginx) and adapt all server-config actions to both.
+- [ ] View/reload web-server config and restart PHP-FPM where permitted.
+
+### 8.2 SSL / TLS
+- [ ] Detect current certificate (issuer, domains, expiry).
+- [ ] Provision/renew Let's Encrypt certs (certbot) for Apache and nginx.
+- [ ] Configure HTTP→HTTPS redirect; verify the chain after issuing.
+
+### 8.3 Provision a fresh server / new remote site
+- [ ] Connect to a bare server over SSH and detect the stack (OS, web server, PHP, DB).
+- [ ] Install the WordPress stack if missing (web server + PHP + DB + WP-CLI).
+- [ ] Create a new site: vhost/server block, document root, database + user, `wp-config`.
+- [ ] Add a brand-new remote site as a sync target, then push a local Studio site into it.
+
+### 8.4 Add-site & connection UX
+- [ ] "Add remote site" flow that distinguishes "connect existing" vs "provision new".
+- [ ] Persist server capabilities (web server, PHP, DB, SSL) on the connection for adaptive UI.
+
+### 8.5 Safety & guardrails (applies across 8.x)
+- [ ] Back up any config file before editing; one-click restore.
+- [ ] Validate config before reload; auto-rollback on failed reload/verification.
+- [ ] Keep destructive server changes behind typed confirmation and the existing prod gates.
+
 ## Completed
 
 - [x] Added generic `syncConnections` storage in `shared.json`, keyed by local site ID.
@@ -485,9 +536,9 @@ now surfaced in the Sync tab's self-hosted UI (`apps/studio/src/modules/sync/ind
 - [x] 4.3 Clearer reporting when remote temporary-directory cleanup fails: `cleanupRemoteWorkDir`
       now logs the failure and emits a UI progress warning naming the leftover path instead of
       silently swallowing the error.
-- [ ] 4.4 Configurable recurring HTTP health checks with notifications. (Deferred: needs a
-      persistent scheduler/timer in the main process and notification plumbing; the one-shot HTTP
-      status + response time is already part of `getSelfHostedSshManagementStatus`.)
+- [ ] 4.4 Configurable recurring HTTP health checks with notifications. **Deprioritized** (not on
+      the near-term path; see Product Vision). One-shot HTTP status + response time already ships in
+      `getSelfHostedSshManagementStatus`.
 - [x] 4.5 Integrate plugin/theme/core advisory data into the management dashboard. Dependency-free,
       no paid feed: `getSelfHostedSshAdvisories` flags extensions removed/closed from the
       WordPress.org directory (critical security signal) and extensions with available updates
@@ -520,11 +571,10 @@ now surfaced in the Sync tab's self-hosted UI (`apps/studio/src/modules/sync/ind
       pinned footer slot. Both `SyncDialog` (WP.com/Pressable) and `SelfHostedSshSyncDialog` now
       render through it, passing their provider-specific selection UI as children and their warnings
       + action buttons as the footer. The two dialogs now share one consistent layout.
-- [ ] 6.2 Optional CLI access to encrypted self-hosted credentials and operations. (Deferred by
-      design: credentials are encrypted with Electron `safeStorage`, which has no CLI-process
-      equivalent. Enabling CLI access requires either re-architecting the vault onto a portable
-      encryption scheme or a CLI→Desktop IPC bridge — a security-sensitive decision that needs team
-      review before implementation. Marked optional in the original roadmap.)
+- [ ] 6.2 Optional CLI access to encrypted self-hosted credentials and operations.
+      **Deprioritized** (not on the near-term path; see Product Vision). Credentials use Electron
+      `safeStorage`, which has no CLI equivalent, so this would need a vault re-architecture or a
+      CLI→Desktop bridge — revisit only if CLI-managed self-hosted sync becomes required.
 
 ### 7. Connector Plugin (last)
 
