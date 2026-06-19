@@ -157,3 +157,71 @@ export function getSafeConfigEditCommand( params: {
 	].join( ' && ' );
 	return { command, backupPath };
 }
+
+// A config backup path looks like `<target>.studio-bak-<timestamp>`.
+const CONFIG_BACKUP_SUFFIX = /\.studio-bak-(\d+)$/;
+
+/**
+ * Build a command listing Studio config backups for the given target files (doc 8.5). Emits
+ * `path\tsize` lines for each `<target>.studio-bak-*` file so the caller can present a restore list.
+ * Targets are quoted; only validated/known config paths should be passed.
+ */
+export function getListConfigBackupsCommand( targets: string[] ): string {
+	return targets
+		.map(
+			( target ) =>
+				`for f in '${ target }'.studio-bak-*; do [ -e "$f" ] && printf '%s\\t%s\\n' "$f" "$(wc -c < "$f")"; done`
+		)
+		.join( '; ' );
+}
+
+/** Parse the backup-list output into structured entries, newest-first. */
+export function parseConfigBackups(
+	output: string
+): Array< { target: string; backupPath: string; timestamp: number; sizeInBytes: number } > {
+	const entries: Array< {
+		target: string;
+		backupPath: string;
+		timestamp: number;
+		sizeInBytes: number;
+	} > = [];
+	for ( const line of output.split( '\n' ) ) {
+		const [ backupPath, sizeRaw ] = line.split( '\t' );
+		const match = backupPath?.match( CONFIG_BACKUP_SUFFIX );
+		if ( ! match ) {
+			continue;
+		}
+		entries.push( {
+			target: backupPath.replace( CONFIG_BACKUP_SUFFIX, '' ),
+			backupPath: backupPath.trim(),
+			timestamp: Number.parseInt( match[ 1 ], 10 ),
+			sizeInBytes: Number.parseInt( sizeRaw ?? '0', 10 ) || 0,
+		} );
+	}
+	return entries.sort( ( a, b ) => b.timestamp - a.timestamp );
+}
+
+/**
+ * Build a command that restores a config backup over its target, re-validates the server config, and
+ * rolls back to the pre-restore state (and exits non-zero) if validation fails. The backup path is
+ * verified to be a `.studio-bak-*` sibling of the target before any restore.
+ */
+export function getRestoreConfigBackupCommand( params: {
+	target: string;
+	backupPath: string;
+	testConfigCommand: string;
+	timestamp: number;
+} ): { command: string; safetyPath: string } {
+	const { target, backupPath, testConfigCommand, timestamp } = params;
+	if ( ! backupPath.startsWith( `${ target }.studio-bak-` ) ) {
+		throw new Error( 'Backup does not belong to the target config file.' );
+	}
+	const safetyPath = `${ target }.studio-prerestore-${ timestamp }`;
+	const command = [
+		`test -e '${ backupPath }'`,
+		`cp -p '${ target }' '${ safetyPath }' 2>/dev/null || true`,
+		`cp -p '${ backupPath }' '${ target }'`,
+		`if ! ${ testConfigCommand }; then cp -p '${ safetyPath }' '${ target }' 2>/dev/null; echo 'studio-config-validation-failed' >&2; exit 1; fi`,
+	].join( ' && ' );
+	return { command, safetyPath };
+}

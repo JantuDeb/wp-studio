@@ -50,6 +50,7 @@ import {
 	selfHostedProvisionRequestSchema,
 	type SelfHostedProvisionRequest,
 	type SelfHostedProvisionResult,
+	type SelfHostedConfigBackup,
 	type SyncDeploymentRecord,
 	type SelfHostedSshMaintenanceAction,
 	type SelfHostedSshDebugLog,
@@ -94,9 +95,12 @@ import {
 	validateProvisionRequest,
 } from './self-hosted-provision';
 import {
+	getListConfigBackupsCommand,
+	getRestoreConfigBackupCommand,
 	getSafeConfigEditCommand,
 	getServerStackProbeCommand,
 	getWebServerAdapter,
+	parseConfigBackups,
 	parseServerStackProbe,
 } from './self-hosted-server-stack';
 import {
@@ -114,6 +118,11 @@ import {
 	stripSyncConnectionsAuth,
 } from './sync-credential-vault';
 import { listSyncDeployments, recordSyncDeployment } from './sync-deployment-history';
+import {
+	deleteServerCapabilities,
+	loadServerCapabilities,
+	saveServerCapabilities,
+} from './sync-server-capabilities';
 import type { RawDirectoryEntry } from '@studio/common/types/sync-tree';
 
 type LocalRenderedField = {
@@ -729,6 +738,7 @@ export async function deleteSyncConnection(
 	connectionId: string
 ): Promise< SyncConnection[] > {
 	await deleteSyncConnectionCredentials( localSiteId, connectionId );
+	await deleteServerCapabilities( localSiteId, connectionId ).catch( () => undefined );
 	return stripSyncConnectionsAuth( await removeSyncConnection( localSiteId, connectionId ) );
 }
 
@@ -1495,10 +1505,31 @@ export async function detectSelfHostedServerStack(
 	const client = await connectSshClient( parsed );
 	try {
 		const output = await runConnectedSshCommand( client, getServerStackProbeCommand( docroot ) );
-		return parseServerStackProbe( output, docroot );
+		const stack = parseServerStackProbe( output, docroot );
+		// Cache the detected capabilities (no secrets) so the UI can show them without re-probing.
+		await saveServerCapabilities(
+			localSiteId,
+			connectionId,
+			stack,
+			new Date().toISOString()
+		).catch( () => undefined );
+		return stack;
 	} finally {
 		client.end();
 	}
+}
+
+/**
+ * Return the cached server capabilities for a connection without an SSH round-trip (doc 8.4), or
+ * null if none are cached yet. The renderer shows these instantly, then calls
+ * `detectSelfHostedServerStack` to refresh.
+ */
+export async function getCachedSelfHostedServerStack(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string
+): Promise< { stack: SelfHostedServerStack; detectedAt: string } | null > {
+	return loadServerCapabilities( localSiteId, connectionId );
 }
 
 function getSelfHostedHtaccessPath( connection: SelfHostedSshConnectionWithAuth ): string {
@@ -1632,6 +1663,99 @@ export async function reloadSelfHostedWebServer(
 			await runConnectedSshCommand( client, adapter.reloadPhpFpmCommand() );
 		}
 		return { reloaded: true, webServer: stack.webServer };
+	} finally {
+		client.end();
+	}
+}
+
+/**
+ * The config files Studio backs up for a connection: the site `.htaccess` and the per-domain vhost
+ * for the detected web server. Used to scope the config-backup browser (doc 8.5).
+ */
+function getSelfHostedConfigTargets(
+	connection: SelfHostedSshConnectionWithAuth,
+	webServer: SelfHostedServerStack[ 'webServer' ]
+): string[] {
+	const targets = [ getSelfHostedHtaccessPath( connection ) ];
+	const domain = new URL( connection.siteUrl ).hostname;
+	if ( webServer === 'nginx' ) {
+		targets.push( `/etc/nginx/sites-available/${ domain }.conf` );
+	} else if ( webServer === 'apache' ) {
+		targets.push( `/etc/apache2/sites-available/${ domain }.conf` );
+	}
+	return targets;
+}
+
+/**
+ * List the Studio config backups (`.studio-bak-*`) for the connection's known config files (doc
+ * 8.5), newest-first, so the renderer can offer a one-click restore.
+ */
+export async function listSelfHostedConfigBackups(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string
+): Promise< SelfHostedConfigBackup[] > {
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+
+	const client = await connectSshClient( parsed );
+	try {
+		const stack = await detectStackOverClient( client, parsed );
+		const targets = getSelfHostedConfigTargets( parsed, stack.webServer );
+		const output = await runConnectedSshCommand( client, getListConfigBackupsCommand( targets ) );
+		return parseConfigBackups( output );
+	} finally {
+		client.end();
+	}
+}
+
+/**
+ * Restore a config backup over its live file (doc 8.5), then validate and reload the web server.
+ * A pre-restore safety copy is taken and automatically restored if the config fails validation, so
+ * a restore can never leave the server with a broken config. Prod-gated; the backup path is verified
+ * to belong to a known config target.
+ */
+export async function restoreSelfHostedConfigBackup(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string,
+	backupPath: string,
+	now: number = Date.now()
+): Promise< { restored: boolean; safetyPath: string } > {
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+	if ( parsed.environmentType === 'production' ) {
+		throw new Error( 'Restoring server config is disabled for production connections.' );
+	}
+
+	const client = await connectSshClient( parsed );
+	try {
+		const stack = await detectStackOverClient( client, parsed );
+		const targets = getSelfHostedConfigTargets( parsed, stack.webServer );
+		const target = targets.find( ( candidate ) =>
+			backupPath.startsWith( `${ candidate }.studio-bak-` )
+		);
+		if ( ! target ) {
+			throw new Error( 'Backup does not belong to a known config file for this connection.' );
+		}
+		const adapter = getWebServerAdapter(
+			stack.webServer === 'unknown' ? 'apache' : stack.webServer,
+			stack.canSudo
+		);
+		const { command, safetyPath } = getRestoreConfigBackupCommand( {
+			target,
+			backupPath,
+			testConfigCommand: adapter.testConfigCommand(),
+			timestamp: now,
+		} );
+		await runConnectedSshCommand( client, command );
+		// Config validated inside the command; reload to apply the restored config.
+		await runConnectedSshCommand( client, adapter.reloadCommand() );
+		return { restored: true, safetyPath };
 	} finally {
 		client.end();
 	}

@@ -144,12 +144,18 @@ const api: IpcApi = {
 		ipcRendererInvoke( 'getSelfHostedSshAdvisories', localSiteId, connectionId ),
 	detectSelfHostedServerStack: ( localSiteId, connectionId ) =>
 		ipcRendererInvoke( 'detectSelfHostedServerStack', localSiteId, connectionId ),
+	getCachedSelfHostedServerStack: ( localSiteId, connectionId ) =>
+		ipcRendererInvoke( 'getCachedSelfHostedServerStack', localSiteId, connectionId ),
 	getSelfHostedHtaccess: ( localSiteId, connectionId ) =>
 		ipcRendererInvoke( 'getSelfHostedHtaccess', localSiteId, connectionId ),
 	updateSelfHostedHtaccess: ( localSiteId, connectionId, content ) =>
 		ipcRendererInvoke( 'updateSelfHostedHtaccess', localSiteId, connectionId, content ),
 	reloadSelfHostedWebServer: ( localSiteId, connectionId, options ) =>
 		ipcRendererInvoke( 'reloadSelfHostedWebServer', localSiteId, connectionId, options ),
+	listSelfHostedConfigBackups: ( localSiteId, connectionId ) =>
+		ipcRendererInvoke( 'listSelfHostedConfigBackups', localSiteId, connectionId ),
+	restoreSelfHostedConfigBackup: ( localSiteId, connectionId, backupPath ) =>
+		ipcRendererInvoke( 'restoreSelfHostedConfigBackup', localSiteId, connectionId, backupPath ),
 	getSelfHostedPhpVersions: ( localSiteId, connectionId ) =>
 		ipcRendererInvoke( 'getSelfHostedPhpVersions', localSiteId, connectionId ),
 	getSelfHostedSslStatus: ( localSiteId, connectionId ) =>

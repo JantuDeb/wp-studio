@@ -1,7 +1,10 @@
 import {
+	getListConfigBackupsCommand,
+	getRestoreConfigBackupCommand,
 	getSafeConfigEditCommand,
 	getServerStackProbeCommand,
 	getWebServerAdapter,
+	parseConfigBackups,
 	parseServerStackProbe,
 } from 'src/modules/sync/lib/self-hosted-server-stack';
 
@@ -110,5 +113,54 @@ describe( 'getSafeConfigEditCommand', () => {
 		expect( command ).toContain( 'if ! nginx -t; then' );
 		expect( command ).toContain( `cp -p '${ backupPath }' '/etc/nginx/sites-enabled/site'` );
 		expect( command ).toContain( 'exit 1' );
+	} );
+} );
+
+describe( 'config backup list/restore', () => {
+	it( 'lists backups for each target', () => {
+		const command = getListConfigBackupsCommand( [ '/var/www/html/.htaccess' ] );
+		expect( command ).toContain( "'/var/www/html/.htaccess'.studio-bak-*" );
+		expect( command ).toContain( 'wc -c' );
+	} );
+
+	it( 'parses backup entries newest-first', () => {
+		const output = [
+			'/var/www/html/.htaccess.studio-bak-1000\t40',
+			'/var/www/html/.htaccess.studio-bak-3000\t60',
+			'not-a-backup\t10',
+			'/var/www/html/.htaccess.studio-bak-2000\t50',
+		].join( '\n' );
+		const entries = parseConfigBackups( output );
+		expect( entries.map( ( e ) => e.timestamp ) ).toEqual( [ 3000, 2000, 1000 ] );
+		expect( entries[ 0 ] ).toMatchObject( {
+			target: '/var/www/html/.htaccess',
+			backupPath: '/var/www/html/.htaccess.studio-bak-3000',
+			sizeInBytes: 60,
+		} );
+	} );
+
+	it( 'restores a backup with a pre-restore safety copy and validation rollback', () => {
+		const { command, safetyPath } = getRestoreConfigBackupCommand( {
+			target: '/var/www/html/.htaccess',
+			backupPath: '/var/www/html/.htaccess.studio-bak-2000',
+			testConfigCommand: 'apachectl configtest',
+			timestamp: 9999,
+		} );
+		expect( safetyPath ).toBe( '/var/www/html/.htaccess.studio-prerestore-9999' );
+		expect( command ).toContain( "test -e '/var/www/html/.htaccess.studio-bak-2000'" );
+		expect( command ).toContain( `cp -p '/var/www/html/.htaccess' '${ safetyPath }'` );
+		expect( command ).toContain( 'if ! apachectl configtest; then' );
+		expect( command ).toContain( `cp -p '${ safetyPath }' '/var/www/html/.htaccess'` );
+	} );
+
+	it( 'rejects a backup path that does not belong to the target', () => {
+		expect( () =>
+			getRestoreConfigBackupCommand( {
+				target: '/var/www/html/.htaccess',
+				backupPath: '/etc/passwd',
+				testConfigCommand: 'true',
+				timestamp: 1,
+			} )
+		).toThrow();
 	} );
 } );

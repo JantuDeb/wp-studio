@@ -51,6 +51,7 @@ import type {
 	SelfHostedHtaccess,
 	SelfHostedSslStatus,
 	SelfHostedProvisionRequest,
+	SelfHostedConfigBackup,
 	SyncConnection,
 	SyncDeploymentRecord,
 	SyncSite,
@@ -599,26 +600,32 @@ function SelfHostedServerPanel( {
 	phpVersions,
 	htaccess,
 	sslStatus,
+	configBackups,
 	isLoading,
 	isSavingHtaccess,
 	isProvisioningSsl,
+	isRestoringConfig,
 	onSaveHtaccess,
 	onReloadWebServer,
 	onProvisionSsl,
 	onRenewSsl,
+	onRestoreConfigBackup,
 }: {
 	connection: SelfHostedSshConnection;
 	serverStack: SelfHostedServerStack | null;
 	phpVersions: SelfHostedPhpVersions | null;
 	htaccess: SelfHostedHtaccess | null;
 	sslStatus: SelfHostedSslStatus | null;
+	configBackups: SelfHostedConfigBackup[];
 	isLoading: boolean;
 	isSavingHtaccess: boolean;
 	isProvisioningSsl: boolean;
+	isRestoringConfig: boolean;
 	onSaveHtaccess: ( content: string ) => void;
 	onReloadWebServer: () => void;
 	onProvisionSsl: ( email: string ) => void;
 	onRenewSsl: () => void;
+	onRestoreConfigBackup: ( backupPath: string ) => void;
 } ) {
 	const { __ } = useI18n();
 	const isProduction = connection.environmentType === 'production';
@@ -798,6 +805,41 @@ function SelfHostedServerPanel( {
 					</div>
 				) }
 			</div>
+
+			{ configBackups.length > 0 && (
+				<div className="flex flex-col gap-2 border-t border-frame-border pt-3">
+					<div className="text-xs font-medium uppercase text-frame-text-secondary">
+						{ __( 'Config backups' ) }
+					</div>
+					<div className="flex flex-col gap-1 max-h-40 overflow-y-auto">
+						{ configBackups.map( ( backup ) => (
+							<div
+								key={ backup.backupPath }
+								className="flex items-center justify-between gap-3 text-sm"
+							>
+								<div className="min-w-0">
+									<div className="truncate text-frame-text">{ backup.target }</div>
+									<div className="text-xs text-frame-text-secondary">
+										{ format( new Date( backup.timestamp ), 'MMM d, y, h:mm a' ) }
+									</div>
+								</div>
+								<Button
+									variant="link"
+									disabled={ isProduction || isRestoringConfig }
+									onClick={ () => onRestoreConfigBackup( backup.backupPath ) }
+								>
+									{ __( 'Restore' ) }
+								</Button>
+							</div>
+						) ) }
+					</div>
+					{ isProduction && (
+						<Notice status="info" isDismissible={ false }>
+							{ __( 'Restoring server config is disabled for production connections.' ) }
+						</Notice>
+					) }
+				</div>
+			) }
 		</div>
 	);
 }
@@ -872,13 +914,16 @@ function SelfHostedSshManagementModal( {
 	phpVersions,
 	htaccess,
 	sslStatus,
+	configBackups,
 	isLoadingServer,
 	isSavingHtaccess,
 	isProvisioningSsl,
+	isRestoringConfig,
 	onSaveHtaccess,
 	onReloadWebServer,
 	onProvisionSsl,
 	onRenewSsl,
+	onRestoreConfigBackup,
 	isLoading,
 	runningAction,
 	onRunAction,
@@ -896,13 +941,16 @@ function SelfHostedSshManagementModal( {
 	phpVersions: SelfHostedPhpVersions | null;
 	htaccess: SelfHostedHtaccess | null;
 	sslStatus: SelfHostedSslStatus | null;
+	configBackups: SelfHostedConfigBackup[];
 	isLoadingServer: boolean;
 	isSavingHtaccess: boolean;
 	isProvisioningSsl: boolean;
+	isRestoringConfig: boolean;
 	onSaveHtaccess: ( content: string ) => void;
 	onReloadWebServer: () => void;
 	onProvisionSsl: ( email: string ) => void;
 	onRenewSsl: () => void;
+	onRestoreConfigBackup: ( backupPath: string ) => void;
 	isLoading: boolean;
 	runningAction: string | null;
 	onRunAction: ( action: SelfHostedSshMaintenanceAction ) => void;
@@ -986,13 +1034,16 @@ function SelfHostedSshManagementModal( {
 							phpVersions={ phpVersions }
 							htaccess={ htaccess }
 							sslStatus={ sslStatus }
+							configBackups={ configBackups }
 							isLoading={ isLoadingServer }
 							isSavingHtaccess={ isSavingHtaccess }
 							isProvisioningSsl={ isProvisioningSsl }
+							isRestoringConfig={ isRestoringConfig }
 							onSaveHtaccess={ onSaveHtaccess }
 							onReloadWebServer={ onReloadWebServer }
 							onProvisionSsl={ onProvisionSsl }
 							onRenewSsl={ onRenewSsl }
+							onRestoreConfigBackup={ onRestoreConfigBackup }
 						/>
 						<div className="flex flex-wrap gap-3">
 							<Button
@@ -1831,6 +1882,8 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 	const [ isLoadingServer, setIsLoadingServer ] = useState( false );
 	const [ isSavingHtaccess, setIsSavingHtaccess ] = useState( false );
 	const [ isProvisioningSsl, setIsProvisioningSsl ] = useState( false );
+	const [ configBackups, setConfigBackups ] = useState< SelfHostedConfigBackup[] >( [] );
+	const [ isRestoringConfig, setIsRestoringConfig ] = useState( false );
 	const [ provisionConnection, setProvisionConnection ] =
 		useState< SelfHostedSshConnection | null >( null );
 	const [ isProvisioningSite, setIsProvisioningSite ] = useState( false );
@@ -2362,6 +2415,13 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 
 	const loadSelfHostedServerPanel = async ( connection: SelfHostedSshConnection ) => {
 		setIsLoadingServer( true );
+		// Show cached capabilities instantly (if any) while the fresh probe runs.
+		const cached = await getIpcApi()
+			.getCachedSelfHostedServerStack( selectedSite.id, connection.id )
+			.catch( () => null );
+		if ( cached ) {
+			setServerStack( cached.stack );
+		}
 		try {
 			const [ stack, php, htaccessResult, ssl ] = await Promise.all( [
 				getIpcApi().detectSelfHostedServerStack( selectedSite.id, connection.id ),
@@ -2375,11 +2435,38 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 			setPhpVersions( php );
 			setHtaccess( htaccessResult );
 			setSslStatus( ssl );
+			setConfigBackups(
+				await getIpcApi()
+					.listSelfHostedConfigBackups( selectedSite.id, connection.id )
+					.catch( () => [] )
+			);
 		} catch {
 			// Server-config detection is best-effort and must not block the management dashboard.
 			setServerStack( null );
 		} finally {
 			setIsLoadingServer( false );
+		}
+	};
+
+	const handleRestoreSelfHostedConfigBackup = async (
+		connection: SelfHostedSshConnection,
+		backupPath: string
+	) => {
+		setIsRestoringConfig( true );
+		try {
+			await getIpcApi().restoreSelfHostedConfigBackup( selectedSite.id, connection.id, backupPath );
+			await loadSelfHostedServerPanel( connection );
+			getIpcApi().showNotification( {
+				title: __( 'Config restored' ),
+				body: __( 'The config file was restored, validated, and the web server reloaded.' ),
+			} );
+		} catch ( error ) {
+			getIpcApi().showErrorMessageBox( {
+				title: __( 'Failed to restore config' ),
+				message: error instanceof Error ? error.message : __( 'Please try again.' ),
+			} );
+		} finally {
+			setIsRestoringConfig( false );
 		}
 	};
 
@@ -2507,6 +2594,7 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 		setPhpVersions( null );
 		setHtaccess( null );
 		setSslStatus( null );
+		setConfigBackups( [] );
 		void loadSelfHostedSshManagementStatus( connection );
 		void loadSelfHostedSshAdvisories( connection );
 		void loadSelfHostedServerPanel( connection );
@@ -2991,9 +3079,11 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 					phpVersions={ phpVersions }
 					htaccess={ htaccess }
 					sslStatus={ sslStatus }
+					configBackups={ configBackups }
 					isLoadingServer={ isLoadingServer }
 					isSavingHtaccess={ isSavingHtaccess }
 					isProvisioningSsl={ isProvisioningSsl }
+					isRestoringConfig={ isRestoringConfig }
 					onSaveHtaccess={ ( content ) =>
 						void handleSaveSelfHostedHtaccess( managementConnection, content )
 					}
@@ -3002,6 +3092,9 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 						void handleProvisionSelfHostedSsl( managementConnection, email )
 					}
 					onRenewSsl={ () => void handleRenewSelfHostedSsl( managementConnection ) }
+					onRestoreConfigBackup={ ( backupPath ) =>
+						void handleRestoreSelfHostedConfigBackup( managementConnection, backupPath )
+					}
 					isLoading={ isLoadingManagementStatus }
 					runningAction={ runningMaintenanceAction }
 					onRequestClose={ () => {

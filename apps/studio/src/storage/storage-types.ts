@@ -38,6 +38,10 @@ export interface SyncConnectionCredentialRecord {
 // `localSiteId:connectionId`. See `SyncDeploymentRecord` in `@studio/common/types/sync`.
 export type SyncDeploymentHistory = Record< string, unknown[] >;
 
+// Cached server-stack capabilities (no secrets) keyed by `localSiteId:connectionId`.
+// See `SelfHostedServerStack` in `@studio/common/types/sync`.
+export type SyncServerCapabilities = Record< string, { stack: unknown; detectedAt: string } >;
+
 export interface UserData {
 	version: 1;
 	siteMetadata: Record< string, AppdataSiteData >;
@@ -63,6 +67,7 @@ export interface UserData {
 	nightlyPromptResult?: NightlyPromptResult;
 	syncConnectionCredentials?: Record< string, SyncConnectionCredentialRecord >;
 	syncDeploymentHistory?: SyncDeploymentHistory;
+	syncServerCapabilities?: SyncServerCapabilities;
 }
 
 export interface PromptWindowsSpeedUpResult {

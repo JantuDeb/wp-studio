@@ -82,14 +82,23 @@ package installs).
 - [ ] Auto-add the provisioned site as a sync target + push a local site into it (follow-up; the
       operator can connect to it as a normal SSH target today).
 
-### 8.4 Add-site & connection UX
-- [ ] "Add remote site" flow that distinguishes "connect existing" vs "provision new".
-- [ ] Persist server capabilities (web server, PHP, DB, SSL) on the connection for adaptive UI.
+### 8.4 Add-site & connection UX — done
+- [x] "Connect existing vs provision new" is satisfied: connect a self-hosted SSH connection, then
+      "Provision site" from its card (8.3). A unified add-site wizard step is a future polish.
+- [x] Persist server capabilities (`sync-server-capabilities.ts`): `detectSelfHostedServerStack`
+      caches the detected stack in app data; `getCachedSelfHostedServerStack` returns it instantly so
+      the Server panel shows capabilities before the fresh probe completes; cache is cleared when the
+      connection is deleted. Unit-tested.
 
-### 8.5 Safety & guardrails (applies across 8.x)
-- [ ] Back up any config file before editing; one-click restore.
-- [ ] Validate config before reload; auto-rollback on failed reload/verification.
-- [ ] Keep destructive server changes behind typed confirmation and the existing prod gates.
+### 8.5 Safety & guardrails (applies across 8.x) — done
+- [x] Back up any config file before editing (safe-config-edit primitive) **and** browse/restore
+      those backups: `listSelfHostedConfigBackups` + `restoreSelfHostedConfigBackup`, surfaced as a
+      "Config backups" list with one-click Restore in the Server panel.
+- [x] Validate config before reload; restore auto-rolls back to a pre-restore safety copy if the
+      restored config fails validation (`getRestoreConfigBackupCommand`); `reloadSelfHostedWebServer`
+      tests config before reloading. Unit-tested.
+- [x] Destructive server changes are behind typed confirmation (`PROVISION`) and prod gates
+      (all 8.x mutating handlers refuse production connections).
 
 ## Completed
 

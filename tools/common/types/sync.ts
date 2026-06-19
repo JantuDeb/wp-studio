@@ -434,6 +434,17 @@ export const selfHostedProvisionResultSchema = z.object( {
 } );
 export type SelfHostedProvisionResult = z.infer< typeof selfHostedProvisionResultSchema >;
 
+// A config-file backup created by the safe-config-edit primitive (doc 8.5).
+export const selfHostedConfigBackupSchema = z.object( {
+	// The live config file this backup belongs to (e.g. the .htaccess or vhost path).
+	target: z.string(),
+	// The backup file path (`<target>.studio-bak-<timestamp>`).
+	backupPath: z.string(),
+	timestamp: z.number().int().nonnegative(),
+	sizeInBytes: z.number().nonnegative(),
+} );
+export type SelfHostedConfigBackup = z.infer< typeof selfHostedConfigBackupSchema >;
+
 export type SelfHostedSshProgress = {
 	localSiteId: string;
 	connectionId: string;
