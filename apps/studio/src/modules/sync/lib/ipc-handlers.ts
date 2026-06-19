@@ -47,6 +47,9 @@ import {
 	type SelfHostedHtaccess,
 	type SelfHostedPhpVersions,
 	type SelfHostedSslStatus,
+	selfHostedProvisionRequestSchema,
+	type SelfHostedProvisionRequest,
+	type SelfHostedProvisionResult,
 	type SyncDeploymentRecord,
 	type SelfHostedSshMaintenanceAction,
 	type SelfHostedSshDebugLog,
@@ -83,6 +86,13 @@ import {
 	rewriteMediaIdReferences,
 	type SyncMediaItem,
 } from './self-hosted-media-sync';
+import {
+	buildCreateDatabaseCommand,
+	buildSecretExportPrefix,
+	buildVhost,
+	buildWordPressInstallCommand,
+	validateProvisionRequest,
+} from './self-hosted-provision';
 import {
 	getSafeConfigEditCommand,
 	getServerStackProbeCommand,
@@ -1793,6 +1803,120 @@ export async function renewSelfHostedSsl(
 			await runConnectedSshCommand( client, adapter.reloadCommand() );
 		}
 		return parseSslProbe( await runConnectedSshCommand( client, getSslProbeCommand( host ) ), now );
+	} finally {
+		client.end();
+	}
+}
+
+function base64( value: string ): string {
+	return Buffer.from( value, 'utf8' ).toString( 'base64' );
+}
+
+/**
+ * Provision a brand-new WordPress site on a server that already has a web server + PHP + DB (doc
+ * 8.3): create the database and user, write and enable the vhost, then download and install
+ * WordPress with WP-CLI. The connection must point at the server to provision on; provisioning is
+ * gated behind a typed `PROVISION` confirmation and refused for production connections. All
+ * identifiers are validated and all secrets are passed base64-encoded so they never appear in a
+ * command string.
+ */
+export async function provisionSelfHostedSite(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string,
+	request: SelfHostedProvisionRequest,
+	confirmation: string
+): Promise< SelfHostedProvisionResult > {
+	if ( confirmation !== 'PROVISION' ) {
+		throw new Error( 'Provisioning a new site requires typing PROVISION to confirm.' );
+	}
+	const parsedRequest = selfHostedProvisionRequestSchema.parse( request );
+	const { domain, docroot, dbName, dbUser } = validateProvisionRequest( parsedRequest );
+
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+	if ( parsed.environmentType === 'production' ) {
+		throw new Error( 'Provisioning is disabled for production connections.' );
+	}
+
+	const wpCliPath = parsed.auth.wpCliPath?.trim() || 'wp';
+	const url = `http://${ domain }`;
+
+	const secretPrefix = buildSecretExportPrefix( {
+		STUDIO_DB_PASS: base64( parsedRequest.dbPassword ),
+		STUDIO_DB_ADMIN_PASS: base64( parsedRequest.adminDbPassword ),
+		STUDIO_WP_ADMIN_PASS: base64( parsedRequest.wpAdminPassword ),
+		STUDIO_SITE_TITLE: base64( parsedRequest.siteTitle ),
+	} );
+
+	const client = await connectSshClient( parsed );
+	try {
+		const stack = await detectStackOverClient( client, parsed );
+		if ( stack.webServer === 'unknown' ) {
+			throw new Error( 'Could not detect Apache or nginx on the remote server.' );
+		}
+		if ( ! stack.phpVersion ) {
+			throw new Error( 'PHP was not detected on the remote server.' );
+		}
+		if ( ! stack.dbEngine ) {
+			throw new Error( 'No MySQL/MariaDB client was detected on the remote server.' );
+		}
+
+		// 1) Database + user.
+		await runConnectedSshCommand(
+			client,
+			secretPrefix +
+				buildCreateDatabaseCommand( { dbName, dbUser, adminDbUser: parsedRequest.adminDbUser } )
+		);
+
+		// 2) Vhost: write the config (root-owned path → sudo tee from base64 to avoid quoting/
+		// injection), enable the site, validate the full config, then reload.
+		const adapter = getWebServerAdapter( stack.webServer, stack.canSudo );
+		const vhost = buildVhost( stack.webServer, { domain, docroot } );
+		const sudo = stack.canSudo ? 'sudo ' : '';
+		await runConnectedSshCommand( client, `${ sudo }mkdir -p '${ docroot }'` );
+		await runConnectedSshCommand(
+			client,
+			`printf '%s' '${ base64( vhost.content ) }' | base64 -d | ${ sudo }tee '${
+				vhost.path
+			}' >/dev/null`
+		);
+		if ( stack.webServer === 'nginx' ) {
+			await runConnectedSshCommand(
+				client,
+				`${ sudo }ln -sf '${ vhost.path }' '/etc/nginx/sites-enabled/${ domain }.conf'`
+			);
+		} else {
+			await runConnectedSshCommand( client, `${ sudo }a2ensite '${ domain }.conf'` );
+		}
+		// Validate the full config now that the site is enabled; reload to serve it.
+		await runConnectedSshCommand( client, adapter.testConfigCommand() );
+		await runConnectedSshCommand( client, adapter.reloadCommand() );
+
+		// 3) WordPress install.
+		const versionOutput = await runConnectedSshCommand(
+			client,
+			secretPrefix +
+				buildWordPressInstallCommand( {
+					wpCliPath,
+					docroot,
+					dbName,
+					dbUser,
+					url,
+					wpAdminUser: parsedRequest.wpAdminUser,
+					wpAdminEmail: parsedRequest.wpAdminEmail,
+				} )
+		);
+
+		return {
+			domain,
+			docroot,
+			url,
+			vhostPath: vhost.path,
+			wpVersion: versionOutput.trim().split( '\n' ).pop() || '',
+		};
 	} finally {
 		client.end();
 	}

@@ -158,6 +158,14 @@ const api: IpcApi = {
 		ipcRendererInvoke( 'provisionSelfHostedSsl', localSiteId, connectionId, options ),
 	renewSelfHostedSsl: ( localSiteId, connectionId ) =>
 		ipcRendererInvoke( 'renewSelfHostedSsl', localSiteId, connectionId ),
+	provisionSelfHostedSite: ( localSiteId, connectionId, request, confirmation ) =>
+		ipcRendererInvoke(
+			'provisionSelfHostedSite',
+			localSiteId,
+			connectionId,
+			request,
+			confirmation
+		),
 	getSelfHostedSshDebugLog: ( localSiteId, connectionId ) =>
 		ipcRendererInvoke( 'getSelfHostedSshDebugLog', localSiteId, connectionId ),
 	downloadSelfHostedSshDebugLog: ( localSiteId, connectionId ) =>

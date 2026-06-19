@@ -50,6 +50,7 @@ import type {
 	SelfHostedPhpVersions,
 	SelfHostedHtaccess,
 	SelfHostedSslStatus,
+	SelfHostedProvisionRequest,
 	SyncConnection,
 	SyncDeploymentRecord,
 	SyncSite,
@@ -193,6 +194,7 @@ function SelfHostedConnectionsList( {
 	onPushSshSite,
 	onManageSshBackups,
 	onManageSshSite,
+	onProvisionSite,
 	onViewDeployments,
 	onPullConnectorSite,
 	onPushConnectorSite,
@@ -209,6 +211,7 @@ function SelfHostedConnectionsList( {
 	onPushSshSite: ( connection: SelfHostedSyncConnection ) => void;
 	onManageSshBackups: ( connection: SelfHostedSyncConnection ) => void;
 	onManageSshSite: ( connection: SelfHostedSyncConnection ) => void;
+	onProvisionSite: ( connection: SelfHostedSyncConnection ) => void;
 	onViewDeployments: ( connection: SelfHostedSyncConnection ) => void;
 	onPullConnectorSite: ( connection: SelfHostedSyncConnection ) => void;
 	onPushConnectorSite: ( connection: SelfHostedSyncConnection ) => void;
@@ -333,6 +336,16 @@ function SelfHostedConnectionsList( {
 							>
 								{ __( 'Manage' ) }
 							</Button>
+							<Button
+								variant="secondary"
+								disabled={
+									connection.provider !== 'self-hosted-ssh' ||
+									connection.environmentType === 'production'
+								}
+								onClick={ () => onProvisionSite( connection ) }
+							>
+								{ __( 'Provision site' ) }
+							</Button>
 							<Button variant="secondary" onClick={ () => onViewDeployments( connection ) }>
 								{ __( 'History' ) }
 							</Button>
@@ -426,6 +439,155 @@ function SelfHostedDeploymentsModal( {
 						) ) }
 					</ul>
 				) }
+			</div>
+		</Modal>
+	);
+}
+
+function SelfHostedProvisionModal( {
+	connection,
+	isProvisioning,
+	onProvision,
+	onRequestClose,
+}: {
+	connection: SelfHostedSshConnection;
+	isProvisioning: boolean;
+	onProvision: ( request: SelfHostedProvisionRequest ) => void;
+	onRequestClose: () => void;
+} ) {
+	const { __ } = useI18n();
+	const [ fields, setFields ] = useState< SelfHostedProvisionRequest >( {
+		domain: '',
+		docroot: '',
+		dbName: '',
+		dbUser: '',
+		dbPassword: '',
+		adminDbUser: 'root',
+		adminDbPassword: '',
+		siteTitle: '',
+		wpAdminUser: 'admin',
+		wpAdminPassword: '',
+		wpAdminEmail: '',
+	} );
+	const [ confirmation, setConfirmation ] = useState( '' );
+
+	const set = ( key: keyof SelfHostedProvisionRequest ) => ( value: string ) =>
+		setFields( ( current ) => ( { ...current, [ key ]: value } ) );
+
+	const requiredFilled =
+		fields.domain.trim() &&
+		fields.docroot.trim() &&
+		fields.dbName.trim() &&
+		fields.dbUser.trim() &&
+		fields.dbPassword &&
+		fields.adminDbUser.trim() &&
+		fields.adminDbPassword &&
+		fields.siteTitle.trim() &&
+		fields.wpAdminUser.trim() &&
+		fields.wpAdminPassword &&
+		fields.wpAdminEmail.trim();
+	const canSubmit =
+		Boolean( requiredFilled ) && confirmation.trim() === 'PROVISION' && ! isProvisioning;
+
+	return (
+		<Modal
+			className="w-[90%] max-w-[680px] max-h-[88vh] [&>div]:!p-0"
+			onRequestClose={ onRequestClose }
+			title={ __( 'Provision a new WordPress site' ) }
+		>
+			<div className="px-8 pb-6 flex flex-col gap-4">
+				<Notice status="warning" isDismissible={ false }>
+					{ sprintf(
+						/* translators: %s is the remote server URL. */
+						__(
+							'This creates a database, virtual host, and a fresh WordPress install on %s. The server must already have a web server, PHP, and a database installed.'
+						),
+						connection.siteUrl
+					) }
+				</Notice>
+
+				<div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+					<TextControl
+						label={ __( 'Domain' ) }
+						value={ fields.domain }
+						onChange={ set( 'domain' ) }
+						placeholder="example.com"
+					/>
+					<TextControl
+						label={ __( 'Document root' ) }
+						value={ fields.docroot }
+						onChange={ set( 'docroot' ) }
+						placeholder="/var/www/example"
+					/>
+					<TextControl
+						label={ __( 'Site title' ) }
+						value={ fields.siteTitle }
+						onChange={ set( 'siteTitle' ) }
+					/>
+					<TextControl
+						type="email"
+						label={ __( 'WordPress admin email' ) }
+						value={ fields.wpAdminEmail }
+						onChange={ set( 'wpAdminEmail' ) }
+					/>
+					<TextControl
+						label={ __( 'Database name' ) }
+						value={ fields.dbName }
+						onChange={ set( 'dbName' ) }
+					/>
+					<TextControl
+						label={ __( 'Database user' ) }
+						value={ fields.dbUser }
+						onChange={ set( 'dbUser' ) }
+					/>
+					<TextControl
+						type="password"
+						label={ __( 'Database password' ) }
+						value={ fields.dbPassword }
+						onChange={ set( 'dbPassword' ) }
+					/>
+					<TextControl
+						label={ __( 'DB admin user' ) }
+						value={ fields.adminDbUser }
+						onChange={ set( 'adminDbUser' ) }
+					/>
+					<TextControl
+						type="password"
+						label={ __( 'DB admin password' ) }
+						value={ fields.adminDbPassword }
+						onChange={ set( 'adminDbPassword' ) }
+					/>
+					<TextControl
+						label={ __( 'WordPress admin user' ) }
+						value={ fields.wpAdminUser }
+						onChange={ set( 'wpAdminUser' ) }
+					/>
+					<TextControl
+						type="password"
+						label={ __( 'WordPress admin password' ) }
+						value={ fields.wpAdminPassword }
+						onChange={ set( 'wpAdminPassword' ) }
+					/>
+				</div>
+
+				<TextControl
+					label={ __( 'Type PROVISION to confirm' ) }
+					value={ confirmation }
+					onChange={ setConfirmation }
+				/>
+
+				<div className="flex gap-4 justify-end">
+					<Button variant="link" onClick={ onRequestClose } disabled={ isProvisioning }>
+						{ __( 'Cancel' ) }
+					</Button>
+					<Button
+						variant="primary"
+						disabled={ ! canSubmit }
+						onClick={ () => onProvision( fields ) }
+					>
+						{ isProvisioning ? __( 'Provisioning…' ) : __( 'Provision site' ) }
+					</Button>
+				</div>
 			</div>
 		</Modal>
 	);
@@ -1669,6 +1831,9 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 	const [ isLoadingServer, setIsLoadingServer ] = useState( false );
 	const [ isSavingHtaccess, setIsSavingHtaccess ] = useState( false );
 	const [ isProvisioningSsl, setIsProvisioningSsl ] = useState( false );
+	const [ provisionConnection, setProvisionConnection ] =
+		useState< SelfHostedSshConnection | null >( null );
+	const [ isProvisioningSite, setIsProvisioningSite ] = useState( false );
 	const [ deploymentsConnection, setDeploymentsConnection ] =
 		useState< SelfHostedSyncConnection | null >( null );
 	const [ deployments, setDeployments ] = useState< SyncDeploymentRecord[] | null >( null );
@@ -2302,6 +2467,38 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 		}
 	};
 
+	const handleProvisionSelfHostedSite = async (
+		connection: SelfHostedSshConnection,
+		request: SelfHostedProvisionRequest
+	) => {
+		setIsProvisioningSite( true );
+		try {
+			const result = await getIpcApi().provisionSelfHostedSite(
+				selectedSite.id,
+				connection.id,
+				request,
+				'PROVISION'
+			);
+			setProvisionConnection( null );
+			getIpcApi().showNotification( {
+				title: __( 'Site provisioned' ),
+				body: sprintf(
+					/* translators: %1$s site URL, %2$s WordPress version. */
+					__( 'WordPress %2$s is now installed at %1$s.' ),
+					result.url,
+					result.wpVersion
+				),
+			} );
+		} catch ( error ) {
+			getIpcApi().showErrorMessageBox( {
+				title: __( 'Failed to provision site' ),
+				message: error instanceof Error ? error.message : __( 'Please try again.' ),
+			} );
+		} finally {
+			setIsProvisioningSite( false );
+		}
+	};
+
 	const handleManageSelfHostedSshSite = ( connection: SelfHostedSshConnection ) => {
 		setManagementConnection( connection );
 		setManagementStatus( null );
@@ -2605,6 +2802,11 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 									handleManageSelfHostedSshSite( connection );
 								}
 							} }
+							onProvisionSite={ ( connection ) => {
+								if ( connection.provider === 'self-hosted-ssh' ) {
+									setProvisionConnection( connection );
+								}
+							} }
 							onViewDeployments={ ( connection ) =>
 								void handleViewSelfHostedDeployments( connection )
 							}
@@ -2825,6 +3027,21 @@ export function ContentTabSync( { selectedSite }: { selectedSite: SiteDetails } 
 					deployments={ deployments }
 					isLoading={ isLoadingDeployments }
 					onRequestClose={ () => setDeploymentsConnection( null ) }
+				/>
+			) }
+
+			{ provisionConnection && (
+				<SelfHostedProvisionModal
+					connection={ provisionConnection }
+					isProvisioning={ isProvisioningSite }
+					onProvision={ ( request ) =>
+						void handleProvisionSelfHostedSite( provisionConnection, request )
+					}
+					onRequestClose={ () => {
+						if ( ! isProvisioningSite ) {
+							setProvisionConnection( null );
+						}
+					} }
 				/>
 			) }
 

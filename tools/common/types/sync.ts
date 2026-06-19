@@ -405,6 +405,35 @@ export const selfHostedSslStatusSchema = z.object( {
 } );
 export type SelfHostedSslStatus = z.infer< typeof selfHostedSslStatusSchema >;
 
+// Provision a new WordPress site on a server that already has a web server + PHP + DB (doc 8.3).
+// Validation of each field is enforced in the main process before any command is built.
+export const selfHostedProvisionRequestSchema = z.object( {
+	domain: z.string(),
+	// Absolute document root to create and point the vhost at.
+	docroot: z.string(),
+	dbName: z.string(),
+	dbUser: z.string(),
+	dbPassword: z.string(),
+	// MySQL/MariaDB admin credentials used only to create the site DB + user.
+	adminDbUser: z.string(),
+	adminDbPassword: z.string(),
+	// New WordPress admin account.
+	siteTitle: z.string(),
+	wpAdminUser: z.string(),
+	wpAdminPassword: z.string(),
+	wpAdminEmail: z.string(),
+} );
+export type SelfHostedProvisionRequest = z.infer< typeof selfHostedProvisionRequestSchema >;
+
+export const selfHostedProvisionResultSchema = z.object( {
+	domain: z.string(),
+	docroot: z.string(),
+	url: z.string(),
+	vhostPath: z.string(),
+	wpVersion: z.string(),
+} );
+export type SelfHostedProvisionResult = z.infer< typeof selfHostedProvisionResultSchema >;
+
 export type SelfHostedSshProgress = {
 	localSiteId: string;
 	connectionId: string;

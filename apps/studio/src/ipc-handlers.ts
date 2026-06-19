@@ -202,6 +202,7 @@ export {
 	getSelfHostedSslStatus,
 	provisionSelfHostedSsl,
 	renewSelfHostedSsl,
+	provisionSelfHostedSite,
 	deleteSelfHostedSshBackup,
 	deleteSyncConnection,
 	disconnectWpcomSites,

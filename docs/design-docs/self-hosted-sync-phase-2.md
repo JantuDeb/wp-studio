@@ -70,12 +70,17 @@ package installs).
 - [x] Renderer UI: SSL section in the Server panel (status, contact email, Enable HTTPS / Renew).
 - [x] Unit tests for probe parsing, certbot command building, and domain/email validation.
 
-### 8.3 Provision a new remote site (on a pre-installed stack)
-- [ ] Connect over SSH and detect the stack; require web server + PHP + DB already present
-      (installing OS packages is out of scope for now).
-- [ ] Create a new site: vhost/server block, document root, database + user, `wp-config`, install
-      WordPress via WP-CLI.
-- [ ] Add the new remote site as a sync target, then push a local Studio site into it.
+### 8.3 Provision a new remote site (on a pre-installed stack) — done
+- [x] Connect over SSH and detect the stack; require web server + PHP + DB present (OS-package
+      installs out of scope) — enforced in `provisionSelfHostedSite`.
+- [x] Create a new site: database + user (`buildCreateDatabaseCommand`), vhost/server block
+      (`buildVhost`, Apache + nginx), `wp-config`, and WordPress install via WP-CLI
+      (`buildWordPressInstallCommand`). All identifiers validated; all secrets passed base64-encoded
+      (never in a command string); typed `PROVISION` confirmation; prod-gated.
+- [x] Renderer UI: a "Provision site" form modal launched from SSH connection cards.
+- [x] Unit tests for validators, vhost templates, secret-export prefix, and command builders.
+- [ ] Auto-add the provisioned site as a sync target + push a local site into it (follow-up; the
+      operator can connect to it as a normal SSH target today).
 
 ### 8.4 Add-site & connection UX
 - [ ] "Add remote site" flow that distinguishes "connect existing" vs "provision new".
