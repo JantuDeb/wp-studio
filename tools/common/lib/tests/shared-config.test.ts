@@ -137,6 +137,39 @@ describe( 'Shared Config', () => {
 			const config = await readSharedConfig();
 			expect( ( config as Record< string, unknown > ).unknownField ).toBe( 'value' );
 		} );
+
+		it( 'should parse generic sync connections keyed by local site id', async () => {
+			const data = {
+				version: 1,
+				syncConnections: {
+					'local-site-id': [
+						{
+							id: 'connection-id',
+							localSiteId: 'local-site-id',
+							provider: 'self-hosted-rest',
+							siteUrl: 'https://example.com',
+							environmentType: 'production',
+							syncMode: 'rest-content',
+							capabilities: {
+								canPush: true,
+								canPushToProduction: true,
+								canSyncContent: true,
+							},
+						},
+					],
+				},
+			};
+			vi.mocked( readFile ).mockResolvedValue( Buffer.from( JSON.stringify( data ) ) );
+
+			const config = await readSharedConfig();
+			expect( config.syncConnections?.[ 'local-site-id' ][ 0 ] ).toMatchObject( {
+				provider: 'self-hosted-rest',
+				siteUrl: 'https://example.com',
+				lastPullTimestamp: null,
+				lastPushTimestamp: null,
+			} );
+			expect( config.syncConnections?.[ 'local-site-id' ][ 0 ] ).not.toHaveProperty( 'auth' );
+		} );
 	} );
 
 	describe( 'saveSharedConfig', () => {

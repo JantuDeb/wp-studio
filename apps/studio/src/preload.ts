@@ -135,6 +135,86 @@ const api: IpcApi = {
 	getConnectedWpcomSites: ( localSiteId ) =>
 		ipcRendererInvoke( 'getConnectedWpcomSites', localSiteId ),
 	fetchSyncableWpcomSites: () => ipcRendererInvoke( 'fetchSyncableWpcomSites' ),
+	getSyncConnections: ( localSiteId ) => ipcRendererInvoke( 'getSyncConnections', localSiteId ),
+	getSyncDeployments: ( localSiteId, connectionId ) =>
+		ipcRendererInvoke( 'getSyncDeployments', localSiteId, connectionId ),
+	getSelfHostedSshManagementStatus: ( localSiteId, connectionId ) =>
+		ipcRendererInvoke( 'getSelfHostedSshManagementStatus', localSiteId, connectionId ),
+	getSelfHostedSshAdvisories: ( localSiteId, connectionId ) =>
+		ipcRendererInvoke( 'getSelfHostedSshAdvisories', localSiteId, connectionId ),
+	detectSelfHostedServerStack: ( localSiteId, connectionId ) =>
+		ipcRendererInvoke( 'detectSelfHostedServerStack', localSiteId, connectionId ),
+	getCachedSelfHostedServerStack: ( localSiteId, connectionId ) =>
+		ipcRendererInvoke( 'getCachedSelfHostedServerStack', localSiteId, connectionId ),
+	getSelfHostedHtaccess: ( localSiteId, connectionId ) =>
+		ipcRendererInvoke( 'getSelfHostedHtaccess', localSiteId, connectionId ),
+	updateSelfHostedHtaccess: ( localSiteId, connectionId, content ) =>
+		ipcRendererInvoke( 'updateSelfHostedHtaccess', localSiteId, connectionId, content ),
+	reloadSelfHostedWebServer: ( localSiteId, connectionId, options ) =>
+		ipcRendererInvoke( 'reloadSelfHostedWebServer', localSiteId, connectionId, options ),
+	listSelfHostedConfigBackups: ( localSiteId, connectionId ) =>
+		ipcRendererInvoke( 'listSelfHostedConfigBackups', localSiteId, connectionId ),
+	restoreSelfHostedConfigBackup: ( localSiteId, connectionId, backupPath ) =>
+		ipcRendererInvoke( 'restoreSelfHostedConfigBackup', localSiteId, connectionId, backupPath ),
+	getSelfHostedPhpVersions: ( localSiteId, connectionId ) =>
+		ipcRendererInvoke( 'getSelfHostedPhpVersions', localSiteId, connectionId ),
+	getSelfHostedSslStatus: ( localSiteId, connectionId ) =>
+		ipcRendererInvoke( 'getSelfHostedSslStatus', localSiteId, connectionId ),
+	provisionSelfHostedSsl: ( localSiteId, connectionId, options ) =>
+		ipcRendererInvoke( 'provisionSelfHostedSsl', localSiteId, connectionId, options ),
+	renewSelfHostedSsl: ( localSiteId, connectionId ) =>
+		ipcRendererInvoke( 'renewSelfHostedSsl', localSiteId, connectionId ),
+	provisionSelfHostedSite: ( localSiteId, connectionId, request, confirmation ) =>
+		ipcRendererInvoke(
+			'provisionSelfHostedSite',
+			localSiteId,
+			connectionId,
+			request,
+			confirmation
+		),
+	getSelfHostedSshDebugLog: ( localSiteId, connectionId ) =>
+		ipcRendererInvoke( 'getSelfHostedSshDebugLog', localSiteId, connectionId ),
+	downloadSelfHostedSshDebugLog: ( localSiteId, connectionId ) =>
+		ipcRendererInvoke( 'downloadSelfHostedSshDebugLog', localSiteId, connectionId ),
+	saveSyncConnection: ( localSiteId, connection ) =>
+		ipcRendererInvoke( 'saveSyncConnection', localSiteId, connection ),
+	deleteSyncConnection: ( localSiteId, connectionId ) =>
+		ipcRendererInvoke( 'deleteSyncConnection', localSiteId, connectionId ),
+	deleteSelfHostedSshBackup: ( localSiteId, connectionId, backupId ) =>
+		ipcRendererInvoke( 'deleteSelfHostedSshBackup', localSiteId, connectionId, backupId ),
+	applySelfHostedSshBackupRetention: ( localSiteId, connectionId, policy ) =>
+		ipcRendererInvoke( 'applySelfHostedSshBackupRetention', localSiteId, connectionId, policy ),
+	testSyncConnection: ( connection ) => ipcRendererInvoke( 'testSyncConnection', connection ),
+	listSelfHostedRestContent: ( localSiteId ) =>
+		ipcRendererInvoke( 'listSelfHostedRestContent', localSiteId ),
+	listSelfHostedSshFiles: ( localSiteId, connectionId, selectedPath ) =>
+		ipcRendererInvoke( 'listSelfHostedSshFiles', localSiteId, connectionId, selectedPath ),
+	listSelfHostedSshBackups: ( localSiteId, connectionId ) =>
+		ipcRendererInvoke( 'listSelfHostedSshBackups', localSiteId, connectionId ),
+	previewSelfHostedRestContentPush: ( localSiteId, connectionId, options ) =>
+		ipcRendererInvoke( 'previewSelfHostedRestContentPush', localSiteId, connectionId, options ),
+	previewSelfHostedSshPush: ( localSiteId, connectionId, options ) =>
+		ipcRendererInvoke( 'previewSelfHostedSshPush', localSiteId, connectionId, options ),
+	previewSelfHostedSshPull: ( localSiteId, connectionId, options ) =>
+		ipcRendererInvoke( 'previewSelfHostedSshPull', localSiteId, connectionId, options ),
+	previewSelfHostedSshIncrementalSync: ( localSiteId, connectionId ) =>
+		ipcRendererInvoke( 'previewSelfHostedSshIncrementalSync', localSiteId, connectionId ),
+	applySelfHostedSshIncrementalSync: ( localSiteId, connectionId, preview ) =>
+		ipcRendererInvoke( 'applySelfHostedSshIncrementalSync', localSiteId, connectionId, preview ),
+	pushSelfHostedRestContent: ( localSiteId, connectionId, options ) =>
+		ipcRendererInvoke( 'pushSelfHostedRestContent', localSiteId, connectionId, options ),
+	pushSelfHostedSshSite: ( localSiteId, connectionId, options ) =>
+		ipcRendererInvoke( 'pushSelfHostedSshSite', localSiteId, connectionId, options ),
+	pushSelfHostedConnectorSite: ( localSiteId, connectionId ) =>
+		ipcRendererInvoke( 'pushSelfHostedConnectorSite', localSiteId, connectionId ),
+	pullSelfHostedSshSite: ( localSiteId, connectionId, options ) =>
+		ipcRendererInvoke( 'pullSelfHostedSshSite', localSiteId, connectionId, options ),
+	pullSelfHostedConnectorSite: ( localSiteId, connectionId ) =>
+		ipcRendererInvoke( 'pullSelfHostedConnectorSite', localSiteId, connectionId ),
+	restoreSelfHostedSshBackup: ( localSiteId, connectionId, backupId ) =>
+		ipcRendererInvoke( 'restoreSelfHostedSshBackup', localSiteId, connectionId, backupId ),
+	runSelfHostedSshMaintenanceAction: ( localSiteId, connectionId, action ) =>
+		ipcRendererInvoke( 'runSelfHostedSshMaintenanceAction', localSiteId, connectionId, action ),
 	pullSiteFromLive: ( siteFolder, remoteSiteId ) =>
 		ipcRendererInvoke( 'pullSiteFromLive', siteFolder, remoteSiteId ),
 	addSyncOperation: ( id, status ) => ipcRendererSend( 'addSyncOperation', id, status ),

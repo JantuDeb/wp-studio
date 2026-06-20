@@ -34,6 +34,19 @@ export interface NightlyPromptResult {
 	dontAskAgain: boolean;
 }
 
+export interface SyncConnectionCredentialRecord {
+	encryptedAuth: string;
+	updatedAt: string;
+}
+
+// Deployment history entries are stored as plain JSON (no secrets) keyed by
+// `localSiteId:connectionId`. See `SyncDeploymentRecord` in `@studio/common/types/sync`.
+export type SyncDeploymentHistory = Record< string, unknown[] >;
+
+// Cached server-stack capabilities (no secrets) keyed by `localSiteId:connectionId`.
+// See `SelfHostedServerStack` in `@studio/common/types/sync`.
+export type SyncServerCapabilities = Record< string, { stack: unknown; detectedAt: string } >;
+
 export interface UserData {
 	version: 1;
 	siteMetadata: Record< string, AppdataSiteData >;
@@ -58,6 +71,9 @@ export interface UserData {
 	aiSessionPlacements?: Record< string, AiSessionSitePlacement >;
 	lastNightlyUpdateCheck?: number;
 	nightlyPromptResult?: NightlyPromptResult;
+	syncConnectionCredentials?: Record< string, SyncConnectionCredentialRecord >;
+	syncDeploymentHistory?: SyncDeploymentHistory;
+	syncServerCapabilities?: SyncServerCapabilities;
 }
 
 export interface PromptWindowsSpeedUpResult {

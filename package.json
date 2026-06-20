@@ -53,6 +53,7 @@
 		"typecheck": "npm run typecheck --workspaces --if-present && tsc -p scripts/tsconfig.json --noEmit",
 		"format": "npm run lint --workspaces --if-present -- --fix && eslint scripts --fix",
 		"test": "vitest run",
+		"test:ssh-integration": "RUN_SSH_INTEGRATION_TESTS=1 vitest run apps/studio/src/modules/sync/tests/self-hosted-ssh.integration.test.ts",
 		"test:watch": "vitest",
 		"e2e": "npx playwright install && npx playwright test",
 		"test:metrics": "npx playwright test --config=./tools/metrics/playwright.metrics.config.ts",
@@ -70,6 +71,7 @@
 		"@testing-library/react": "^16.3.2",
 		"@testing-library/user-event": "^14.6.1",
 		"@types/fs-extra": "^11.0.4",
+		"@types/ssh2": "^1.15.5",
 		"@vitest/ui": "^4.1.8",
 		"@yao-pkg/pkg": "^6.13.1",
 		"electron-playwright-helpers": "^2.1.0",
@@ -96,5 +98,8 @@
 		"vite": "^8.0.16",
 		"vitest": "^4.0.18",
 		"web-streams-polyfill": "^4.2.0"
+	},
+	"dependencies": {
+		"ssh2": "^1.17.0"
 	}
 }

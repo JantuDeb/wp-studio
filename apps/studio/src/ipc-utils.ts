@@ -7,6 +7,7 @@ import { getMainWindow } from 'src/main-window';
 import type { AgentRunEvent } from '@studio/common/ai/agent-events';
 import type { RemoteSessionStatus } from '@studio/common/lib/remote-session';
 import type { StoredAuthToken } from '@studio/common/lib/shared-config';
+import type { SelfHostedSshProgress } from '@studio/common/types/sync';
 import type { AiSessionPlacementUpdatedEvent } from 'src/lib/ai-session-placement';
 
 type SnapshotEventData = {
@@ -38,6 +39,7 @@ export interface IpcEvents {
 	'sync-upload-resumed': [ { selectedSiteId: string; remoteSiteId: number } ];
 	'sync-upload-progress': [ { selectedSiteId: string; remoteSiteId: number; progress: number } ];
 	'sync-upload-manually-paused': [ { selectedSiteId: string; remoteSiteId: number } ];
+	'self-hosted-ssh-progress': [ SelfHostedSshProgress ];
 	'snapshot-error': [ { operationId: crypto.UUID; data: SnapshotEventData } ];
 	'snapshot-fatal-error': [ { operationId: crypto.UUID; data: { message: string } } ];
 	'snapshot-output': [ { operationId: crypto.UUID; data: SnapshotEventData } ];

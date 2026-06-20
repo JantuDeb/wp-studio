@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+
+export WORDPRESS_DB_HOST="${WORDPRESS_DB_HOST:-database}"
+export WORDPRESS_DB_USER="${WORDPRESS_DB_USER:-wordpress}"
+export WORDPRESS_DB_PASSWORD="${WORDPRESS_DB_PASSWORD:-wordpress}"
+export WORDPRESS_DB_NAME="${WORDPRESS_DB_NAME:-wordpress}"
+
+exec php /usr/local/bin/wp-cli.phar "$@"

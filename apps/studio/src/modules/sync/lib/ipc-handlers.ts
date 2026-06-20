@@ -1,7 +1,7 @@
-import { app, IpcMainInvokeEvent } from 'electron';
+import { app, BrowserWindow, dialog, IpcMainInvokeEvent } from 'electron';
 import fs from 'fs';
 import fsPromises from 'fs/promises';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import {
 	addConnectedWpcomSite,
@@ -13,9 +13,53 @@ import {
 import { isErrnoException } from '@studio/common/lib/is-errno-exception';
 import { getCurrentUserId } from '@studio/common/lib/shared-config';
 import { fetchSyncableSites } from '@studio/common/lib/sync/sync-api';
+import {
+	addOrUpdateSyncConnection,
+	getSyncConnectionsForLocalSite,
+	removeSyncConnection,
+} from '@studio/common/lib/sync-connections';
 import wpcomFactory from '@studio/common/lib/wpcom-factory';
 import wpcomXhrRequest from '@studio/common/lib/wpcom-xhr-request-factory';
-import { SyncSite } from '@studio/common/types/sync';
+import {
+	selfHostedRestConnectionWithAuthSchema,
+	selfHostedConnectorConnectionWithAuthSchema,
+	selfHostedSshBackupSchema,
+	selfHostedSshBackupRetentionPolicySchema,
+	selfHostedSshPullOptionsSchema,
+	selfHostedSshPushOptionsSchema,
+	selfHostedSshConnectionWithAuthSchema,
+	selfHostedSshMaintenanceActionSchema,
+	selfHostedSshIncrementalPreviewSchema,
+	SyncConnection,
+	SyncSite,
+	type SelfHostedSshPullOptions,
+	type SelfHostedSshPullEstimate,
+	type SelfHostedSshPushOptions,
+	type SelfHostedSshBackup,
+	type SelfHostedSshBackupRetentionPolicy,
+	type SelfHostedSshPushPreflight,
+	type SelfHostedSshProgress,
+	type SelfHostedSshVerification,
+	type SelfHostedSshManagementStatus,
+	type SelfHostedSshManagedExtension,
+	type SelfHostedSshAdvisory,
+	type SelfHostedServerStack,
+	type SelfHostedHtaccess,
+	type SelfHostedPhpVersions,
+	type SelfHostedSslStatus,
+	selfHostedProvisionRequestSchema,
+	type SelfHostedProvisionRequest,
+	type SelfHostedProvisionResult,
+	type SelfHostedConfigBackup,
+	type SyncDeploymentRecord,
+	type SelfHostedSshMaintenanceAction,
+	type SelfHostedSshDebugLog,
+	type SelfHostedSshIncrementalPreview,
+	type SelfHostedRestConnectionWithAuth,
+	type SelfHostedConnectorConnectionWithAuth,
+	type SelfHostedSshConnectionWithAuth,
+} from '@studio/common/types/sync';
+import { Client, type ConnectConfig, type FileEntryWithStats, type SFTPWrapper } from 'ssh2';
 import { Upload } from 'tus-js-client';
 import { z } from 'zod';
 import {
@@ -25,19 +69,150 @@ import {
 import { sendIpcEventToRenderer } from 'src/ipc-utils';
 import { ACTIVE_SYNC_OPERATIONS } from 'src/lib/active-sync-operations';
 import { download } from 'src/lib/download';
+import { getSiteUrl } from 'src/lib/get-site-url';
 import { getSyncBackupTempPath } from 'src/lib/get-sync-backup-temp-path';
 import { getAuthenticationToken } from 'src/lib/oauth';
+import { fetchSiteRest } from 'src/lib/wordpress-rest-api';
 import { executeCliCommand } from 'src/modules/cli/lib/execute-command';
-import { exportSite } from 'src/modules/import-export/lib/ipc-handlers';
+import { exportSite, importSite } from 'src/modules/import-export/lib/ipc-handlers';
 import { SiteServer } from 'src/site-server';
 import { SyncOption } from 'src/types';
+import { buildExtensionAdvisories, type DirectoryLookup } from './self-hosted-advisories';
+import { selectBackupsToPrune } from './self-hosted-backup-retention';
+import {
+	buildMediaUrlReplacementMap,
+	getUsedMediaIdsFromContent,
+	mergeMediaUrlReplacementMaps,
+	replaceMediaUrls,
+	rewriteMediaIdReferences,
+	type SyncMediaItem,
+} from './self-hosted-media-sync';
+import {
+	buildCreateDatabaseCommand,
+	buildSecretExportPrefix,
+	buildVhost,
+	buildWordPressInstallCommand,
+	validateProvisionRequest,
+} from './self-hosted-provision';
+import {
+	getListConfigBackupsCommand,
+	getRestoreConfigBackupCommand,
+	getSafeConfigEditCommand,
+	getServerStackProbeCommand,
+	getWebServerAdapter,
+	parseConfigBackups,
+	parseServerStackProbe,
+} from './self-hosted-server-stack';
+import {
+	assertValidDomain,
+	getCertbotIssueCommand,
+	getCertbotRenewCommand,
+	getSslProbeCommand,
+	parseSslProbe,
+} from './self-hosted-ssl';
+import {
+	deleteSyncConnectionCredentials,
+	hydrateSyncConnectionCredentials,
+	saveSyncConnectionCredentials,
+	stripSyncConnectionAuth,
+	stripSyncConnectionsAuth,
+} from './sync-credential-vault';
+import { listSyncDeployments, recordSyncDeployment } from './sync-deployment-history';
+import {
+	deleteServerCapabilities,
+	loadServerCapabilities,
+	saveServerCapabilities,
+} from './sync-server-capabilities';
+import type { RawDirectoryEntry } from '@studio/common/types/sync-tree';
+
+type LocalRenderedField = {
+	raw?: string;
+	rendered?: string;
+};
+
+type LocalTerm = {
+	id: number;
+	name: string;
+	slug: string;
+	description?: string;
+	parent?: number;
+};
+
+type LocalMedia = SyncMediaItem & {
+	id: number;
+	source_url: string;
+	mime_type?: string;
+	date?: string;
+	date_gmt?: string;
+	title?: LocalRenderedField;
+	alt_text?: string;
+	caption?: LocalRenderedField;
+	description?: LocalRenderedField;
+};
+
+type LocalContentItem = {
+	id: number;
+	slug: string;
+	type: 'post' | 'page';
+	status?: string;
+	date?: string;
+	date_gmt?: string;
+	title?: LocalRenderedField;
+	content?: LocalRenderedField;
+	excerpt?: LocalRenderedField;
+	featured_media?: number;
+	parent?: number;
+	menu_order?: number;
+	comment_status?: string;
+	ping_status?: string;
+	sticky?: boolean;
+	categories?: number[];
+	tags?: number[];
+};
+
+type RemoteEntity = {
+	id: number;
+	slug?: string;
+	source_url?: string;
+	link?: string;
+	media_details?: SyncMediaItem[ 'media_details' ];
+};
+
+type LocalContentSelectionItem = {
+	id: number;
+	type: 'post' | 'page';
+	title: string;
+	slug: string;
+	status: string;
+	categories: number;
+	tags: number;
+	hasFeaturedImage: boolean;
+};
+
+type ContentPushPreviewItem = {
+	id: number;
+	type: 'post' | 'page';
+	title: string;
+	slug: string;
+	action: 'create' | 'update' | 'conflict';
+	remoteId: number | null;
+	reason?: string;
+};
+
+type ContentPushPreview = {
+	items: ContentPushPreviewItem[];
+	summary: {
+		create: number;
+		update: number;
+		conflict: number;
+	};
+};
 
 /**
  * Registry to store AbortControllers for ongoing sync operations (push/pull).
  * Key format: `${selectedSiteId}-${remoteSiteId}`
  */
 const SYNC_ABORT_CONTROLLERS = new Map< string, AbortController >();
-
 /**
  * Registry to store TUS upload instances and their pause state for ongoing uploads.
  * Key format: `${selectedSiteId}-${remoteSiteId}`
@@ -535,4 +710,3700 @@ export async function getConnectedWpcomSites(
 		return getConnectedWpcomSitesForLocalSite( localSiteId );
 	}
 	return getAllConnectedWpcomSitesForCurrentUser();
+}
+
+export async function getSyncConnections(
+	event: IpcMainInvokeEvent,
+	localSiteId: string
+): Promise< SyncConnection[] > {
+	return stripSyncConnectionsAuth( await getSyncConnectionsForLocalSite( localSiteId ) );
+}
+
+export async function saveSyncConnection(
+	event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connection: SyncConnection
+): Promise< SyncConnection[] > {
+	await saveSyncConnectionCredentials( localSiteId, connection );
+	const connections = await addOrUpdateSyncConnection(
+		localSiteId,
+		stripSyncConnectionAuth( connection )
+	);
+	return stripSyncConnectionsAuth( connections );
+}
+
+export async function deleteSyncConnection(
+	event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string
+): Promise< SyncConnection[] > {
+	await deleteSyncConnectionCredentials( localSiteId, connectionId );
+	await deleteServerCapabilities( localSiteId, connectionId ).catch( () => undefined );
+	return stripSyncConnectionsAuth( await removeSyncConnection( localSiteId, connectionId ) );
+}
+
+export async function testSyncConnection(
+	event: IpcMainInvokeEvent,
+	connection: SyncConnection
+): Promise< { ok: boolean; message?: string } > {
+	const hydratedConnection = await hydrateSyncConnectionCredentials(
+		connection.localSiteId,
+		connection
+	);
+
+	const restConnection = selfHostedRestConnectionWithAuthSchema.safeParse( hydratedConnection );
+	if ( restConnection.success ) {
+		return testSelfHostedRestConnection( restConnection.data );
+	}
+
+	const sshConnection = selfHostedSshConnectionWithAuthSchema.safeParse( hydratedConnection );
+	if ( sshConnection.success ) {
+		return testSelfHostedSshConnection( sshConnection.data );
+	}
+
+	const connectorConnection =
+		selfHostedConnectorConnectionWithAuthSchema.safeParse( hydratedConnection );
+	if ( connectorConnection.success ) {
+		return testSelfHostedConnectorConnection( connectorConnection.data );
+	}
+
+	return { ok: false, message: 'Connection testing for this sync mode is not implemented yet.' };
+}
+
+async function connectorRequest< T >(
+	connection: SelfHostedConnectorConnectionWithAuth,
+	pathName: string,
+	options: {
+		method?: string;
+		body?: unknown;
+		rawBody?: BodyInit;
+		headers?: Record< string, string >;
+	} = {}
+): Promise< T > {
+	const url = new URL(
+		`/wp-json/studio-connector/v1/${ pathName.replace( /^\/+/, '' ) }`,
+		connection.siteUrl
+	);
+	const headers: Record< string, string > = {
+		Accept: 'application/json',
+		Authorization: `Bearer ${ connection.auth.token }`,
+		...options.headers,
+	};
+	let body = options.rawBody;
+	if ( options.body !== undefined ) {
+		headers[ 'Content-Type' ] = 'application/json';
+		body = JSON.stringify( options.body );
+	}
+	const response = await fetch( url, {
+		method: options.method ?? 'GET',
+		headers,
+		body,
+		signal: AbortSignal.timeout( 120_000 ),
+	} );
+	if ( ! response.ok ) {
+		const text = await response.text();
+		throw new Error( text || `Connector request failed with HTTP ${ response.status }.` );
+	}
+	return ( await response.json() ) as T;
+}
+
+async function testSelfHostedConnectorConnection(
+	connection: SelfHostedConnectorConnectionWithAuth
+): Promise< { ok: boolean; message?: string } > {
+	try {
+		const status = await connectorRequest< {
+			plugin_version?: string;
+			wordpress_version?: string;
+			can_export?: boolean;
+			can_restore?: boolean;
+		} >( connection, 'status' );
+		if ( ! status.can_export || ! status.can_restore ) {
+			return {
+				ok: false,
+				message: 'Connector is installed but does not permit export and restore operations.',
+			};
+		}
+		return {
+			ok: true,
+			message: `Connector ${ status.plugin_version ?? '' } is ready for WordPress ${
+				status.wordpress_version ?? ''
+			}.`.trim(),
+		};
+	} catch ( error ) {
+		return {
+			ok: false,
+			message:
+				error instanceof Error ? error.message : 'Unable to connect to the connector plugin.',
+		};
+	}
+}
+
+async function testSelfHostedRestConnection(
+	connection: SelfHostedRestConnectionWithAuth
+): Promise< { ok: boolean; message?: string } > {
+	const siteUrl = new URL( connection.siteUrl );
+	const restUrl = new URL( '/wp-json/', siteUrl );
+
+	try {
+		const response = await fetch( restUrl, {
+			headers: {
+				Accept: 'application/json',
+			},
+			signal: AbortSignal.timeout( 10000 ),
+		} );
+
+		if ( ! response.ok ) {
+			return {
+				ok: false,
+				message: `WordPress REST API returned HTTP ${ response.status }.`,
+			};
+		}
+
+		const body = ( await response.json() ) as unknown;
+		const result = z
+			.object( {
+				name: z.string().optional(),
+				namespaces: z.array( z.string() ).optional(),
+				routes: z.record( z.string(), z.unknown() ).optional(),
+			} )
+			.safeParse( body );
+
+		if (
+			! result.success ||
+			! result.data.namespaces?.includes( 'wp/v2' ) ||
+			! result.data.routes?.[ '/wp/v2/posts' ]
+		) {
+			return { ok: false, message: 'The site did not return a WordPress REST API index.' };
+		}
+
+		return { ok: true, message: 'WordPress REST API is available.' };
+	} catch ( error ) {
+		return {
+			ok: false,
+			message:
+				error instanceof Error ? error.message : 'Unable to connect to the WordPress REST API.',
+		};
+	}
+}
+
+function quoteRemoteShellArg( value: string ): string {
+	return `'${ value.replace( /'/g, `'\\''` ) }'`;
+}
+
+async function getSshPrivateKey(
+	connection: SelfHostedSshConnectionWithAuth
+): Promise< string | undefined > {
+	if ( connection.auth.privateKeyText ) {
+		return connection.auth.privateKeyText;
+	}
+
+	if ( connection.auth.privateKeyPath ) {
+		return fsPromises.readFile( connection.auth.privateKeyPath, 'utf8' );
+	}
+}
+
+function getSshPreflightCommand( connection: SelfHostedSshConnectionWithAuth ): string {
+	const wpCliPath = connection.auth.wpCliPath?.trim() || 'wp';
+	const remotePath = quoteRemoteShellArg( connection.auth.remoteWordPressPath );
+	return [
+		`test -d ${ remotePath }`,
+		`cd ${ remotePath }`,
+		`${ quoteRemoteShellArg( wpCliPath ) } core version --path=${ remotePath }`,
+	].join( ' && ' );
+}
+
+async function connectSshClient( connection: SelfHostedSshConnectionWithAuth ): Promise< Client > {
+	const privateKey = await getSshPrivateKey( connection );
+	const config: ConnectConfig = {
+		host: connection.auth.host,
+		port: connection.auth.port,
+		username: connection.auth.username,
+		readyTimeout: 10000,
+	};
+
+	if ( connection.auth.password ) {
+		config.password = connection.auth.password;
+	}
+
+	if ( privateKey ) {
+		config.privateKey = privateKey;
+	}
+
+	return new Promise( ( resolve, reject ) => {
+		const client = new Client();
+		const timeout = setTimeout( () => {
+			client.end();
+			reject( new Error( 'SSH connection timed out.' ) );
+		}, 10000 );
+
+		client
+			.on( 'ready', () => {
+				clearTimeout( timeout );
+				resolve( client );
+			} )
+			.on( 'error', ( error ) => {
+				clearTimeout( timeout );
+				client.end();
+				reject( error );
+			} )
+			.connect( config );
+	} );
+}
+
+async function runConnectedSshCommand( client: Client, command: string ): Promise< string > {
+	return new Promise( ( resolve, reject ) => {
+		client.exec( command, ( execError, stream ) => {
+			if ( execError ) {
+				reject( execError );
+				return;
+			}
+
+			let stdout = '';
+			let stderr = '';
+
+			stream
+				.on( 'close', ( code: number | null ) => {
+					if ( code === 0 || code === null ) {
+						resolve( stdout );
+						return;
+					}
+					reject( new Error( stderr.trim() || `Remote command failed with ${ code }.` ) );
+				} )
+				.on( 'data', ( data: Buffer ) => {
+					stdout += data.toString( 'utf8' );
+				} );
+
+			stream.stderr.on( 'data', ( data: Buffer ) => {
+				stderr += data.toString( 'utf8' );
+			} );
+		} );
+	} );
+}
+
+async function runSshCommand(
+	connection: SelfHostedSshConnectionWithAuth,
+	command: string
+): Promise< string > {
+	const client = await connectSshClient( connection );
+	try {
+		return await runConnectedSshCommand( client, command );
+	} finally {
+		client.end();
+	}
+}
+
+async function testSelfHostedSshConnection(
+	connection: SelfHostedSshConnectionWithAuth
+): Promise< { ok: boolean; message?: string } > {
+	try {
+		const stdout = await runSshCommand( connection, getSshPreflightCommand( connection ) );
+		const wpVersion = stdout.trim();
+		return {
+			ok: true,
+			message: wpVersion
+				? `SSH connected and WP-CLI found WordPress ${ wpVersion }.`
+				: 'SSH connected and WP-CLI is available.',
+		};
+	} catch ( error ) {
+		return {
+			ok: false,
+			message: error instanceof Error ? error.message : 'Unable to connect over SSH.',
+		};
+	}
+}
+
+function getRemoteStudioSyncWorkDir( connection: SelfHostedSshConnectionWithAuth ): string {
+	const timestamp = Date.now();
+	return `${ connection.auth.remoteWordPressPath.replace(
+		/\/+$/,
+		''
+	) }/.studio-sync-${ timestamp }-${ randomUUID() }`;
+}
+
+function getSshPullArchiveCommand(
+	connection: SelfHostedSshConnectionWithAuth,
+	remoteWorkDir: string,
+	options: SelfHostedSshPullOptions
+): string {
+	const wpCliPath = connection.auth.wpCliPath?.trim() || 'wp';
+	const remotePath = quoteRemoteShellArg( connection.auth.remoteWordPressPath );
+	const workDir = quoteRemoteShellArg( remoteWorkDir );
+	const archivePath = quoteRemoteShellArg( `${ remoteWorkDir }/studio-pull.tar.gz` );
+	const isFullPull = options.optionsToSync.includes( 'all' );
+	const commands = [ `set -e`, `test -d ${ remotePath }`, `cd ${ remotePath }` ];
+
+	if ( isFullPull ) {
+		commands.push(
+			`mkdir -p ${ workDir }/app/sql ${ workDir }/app/public`,
+			`${ quoteRemoteShellArg(
+				wpCliPath
+			) } db export ${ workDir }/app/sql/database.sql --path=${ remotePath } --add-drop-table`,
+			`cp -a ${ remotePath }/wp-content ${ workDir }/app/public/wp-content`,
+			`tar -czf ${ archivePath } -C ${ workDir } app`
+		);
+	} else {
+		commands.push( `mkdir -p ${ workDir }/sql ${ workDir }/wp-content` );
+
+		if ( options.optionsToSync.includes( 'sqls' ) ) {
+			commands.push(
+				`${ quoteRemoteShellArg(
+					wpCliPath
+				) } db export ${ workDir }/sql/database.sql --path=${ remotePath } --add-drop-table`
+			);
+		}
+
+		for ( const selectedPath of options.specificSelectionPaths ?? [] ) {
+			const normalizedPath = normalizeSelfHostedWpContentPath( selectedPath );
+			if ( normalizedPath === '' ) {
+				commands.push( `cp -a ${ remotePath }/wp-content/. ${ workDir }/wp-content/` );
+				continue;
+			}
+			const source = quoteRemoteShellArg(
+				path.posix.join( connection.auth.remoteWordPressPath, 'wp-content', normalizedPath )
+			);
+			const destination = quoteRemoteShellArg(
+				path.posix.join( remoteWorkDir, 'wp-content', normalizedPath )
+			);
+			const destinationParent = quoteRemoteShellArg(
+				path.posix.dirname( path.posix.join( remoteWorkDir, 'wp-content', normalizedPath ) )
+			);
+			commands.push( `mkdir -p ${ destinationParent }`, `cp -a ${ source } ${ destination }` );
+		}
+
+		commands.push( `tar -czf ${ archivePath } -C ${ workDir } sql wp-content` );
+	}
+
+	commands.push( `printf '%s\\n' ${ archivePath }` );
+	return commands.join( ' && ' );
+}
+
+function normalizeSelfHostedWpContentPath( selectedPath: string ): string {
+	const normalizedPath = selectedPath
+		.replace( /\\/g, '/' )
+		.replace( /^\/?wp-content\/?/, '' )
+		.replace( /^\/+|\/+$/g, '' );
+	const segments = normalizedPath.split( '/' ).filter( Boolean );
+
+	if (
+		selectedPath.includes( '\0' ) ||
+		segments.some( ( segment ) => segment === '.' || segment === '..' )
+	) {
+		throw new Error( 'Selected SSH sync path must stay inside wp-content.' );
+	}
+
+	return segments.join( '/' );
+}
+
+async function readSftpDirectory(
+	sftp: SFTPWrapper,
+	remotePath: string
+): Promise< FileEntryWithStats[] > {
+	return new Promise( ( resolve, reject ) => {
+		sftp.readdir( remotePath, ( error, entries ) => {
+			if ( error ) {
+				reject( error );
+				return;
+			}
+			resolve( entries );
+		} );
+	} );
+}
+
+export async function listSelfHostedSshFiles(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string,
+	selectedPath: string = ''
+): Promise< RawDirectoryEntry[] > {
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+	const normalizedPath = normalizeSelfHostedWpContentPath( selectedPath );
+	const remotePath = path.posix.join(
+		parsed.auth.remoteWordPressPath,
+		'wp-content',
+		normalizedPath
+	);
+	const client = await connectSshClient( parsed );
+
+	try {
+		const sftp = await getSftpClient( client );
+		const entries = await readSftpDirectory( sftp, remotePath );
+		sftp.end();
+		return entries
+			.filter( ( entry ) => entry.filename !== '.' && entry.filename !== '..' )
+			.map( ( entry ) => {
+				const relativePath = [ normalizedPath, entry.filename ].filter( Boolean ).join( '/' );
+				const isDirectory = entry.attrs.isDirectory();
+				return {
+					name: entry.filename,
+					isDirectory,
+					path: `wp-content/${ relativePath }`,
+					children: isDirectory ? [] : undefined,
+				};
+			} );
+	} finally {
+		client.end();
+	}
+}
+
+async function getSftpClient( client: Client ): Promise< SFTPWrapper > {
+	return new Promise( ( resolve, reject ) => {
+		client.sftp( ( error, sftp ) => {
+			if ( error ) {
+				reject( error );
+				return;
+			}
+			resolve( sftp );
+		} );
+	} );
+}
+
+async function downloadSftpFile(
+	sftp: SFTPWrapper,
+	remotePath: string,
+	localPath: string,
+	onProgress?: ( progress: number ) => void
+): Promise< void > {
+	return new Promise( ( resolve, reject ) => {
+		sftp.fastGet(
+			remotePath,
+			localPath,
+			{
+				step: ( total, _chunk, fileSize ) => {
+					if ( fileSize > 0 ) {
+						onProgress?.( Math.min( 100, ( total / fileSize ) * 100 ) );
+					}
+				},
+			},
+			( error ) => {
+				if ( error ) {
+					reject( error );
+					return;
+				}
+				resolve();
+			}
+		);
+	} );
+}
+
+async function uploadSftpFile(
+	sftp: SFTPWrapper,
+	localPath: string,
+	remotePath: string,
+	onProgress?: ( progress: number ) => void
+): Promise< void > {
+	return new Promise( ( resolve, reject ) => {
+		sftp.fastPut(
+			localPath,
+			remotePath,
+			{
+				step: ( total, _chunk, fileSize ) => {
+					if ( fileSize > 0 ) {
+						onProgress?.( Math.min( 100, ( total / fileSize ) * 100 ) );
+					}
+				},
+			},
+			( error ) => {
+				if ( error ) {
+					reject( error );
+					return;
+				}
+				resolve();
+			}
+		);
+	} );
+}
+
+function sendSelfHostedSshProgress( progress: SelfHostedSshProgress ): void {
+	void sendIpcEventToRenderer( 'self-hosted-ssh-progress', progress );
+}
+
+/**
+ * Persist a deployment/audit record. Recording must never break the underlying sync operation, so
+ * failures are logged and swallowed.
+ */
+async function logSyncDeployment(
+	entry: Omit< SyncDeploymentRecord, 'id' | 'finishedAt' > & { finishedAt?: string }
+): Promise< void > {
+	try {
+		await recordSyncDeployment( {
+			...entry,
+			id: randomUUID(),
+			finishedAt: entry.finishedAt ?? new Date().toISOString(),
+		} );
+	} catch ( error ) {
+		console.warn( `Failed to record sync deployment history: ${ error }` );
+	}
+}
+
+/** List the deployment/audit history for a self-hosted connection (newest-first). */
+export async function getSyncDeployments(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string
+): Promise< SyncDeploymentRecord[] > {
+	return listSyncDeployments( localSiteId, connectionId );
+}
+
+/**
+ * Remove a remote temporary working directory, reporting (rather than silently swallowing) any
+ * cleanup failure. A failed cleanup does not fail the operation — the data transfer already
+ * succeeded — but it can leave temporary files on the remote host, so we surface a warning to the
+ * UI when we have a progress context and always log the detail.
+ */
+async function cleanupRemoteWorkDir(
+	client: Client,
+	remoteWorkDir: string,
+	context?: {
+		localSiteId: string;
+		connectionId: string;
+		operation: SelfHostedSshProgress[ 'operation' ];
+	}
+): Promise< void > {
+	try {
+		await runConnectedSshCommand( client, `rm -rf ${ quoteRemoteShellArg( remoteWorkDir ) }` );
+	} catch ( error ) {
+		const detail = error instanceof Error ? error.message : String( error );
+		console.warn(
+			`Failed to clean up remote Studio working directory ${ remoteWorkDir }: ${ detail }`
+		);
+		if ( context ) {
+			sendSelfHostedSshProgress( {
+				localSiteId: context.localSiteId,
+				connectionId: context.connectionId,
+				operation: context.operation,
+				phase: 'finished',
+				progress: 100,
+				message: `Operation completed, but remote temporary files at ${ remoteWorkDir } could not be removed automatically. Remove them manually if needed.`,
+			} );
+		}
+	}
+}
+
+async function verifySelfHostedSshSite(
+	client: Client,
+	connection: SelfHostedSshConnectionWithAuth
+): Promise< SelfHostedSshVerification > {
+	const remotePath = quoteRemoteShellArg( connection.auth.remoteWordPressPath );
+	const wpCliPath = quoteRemoteShellArg( connection.auth.wpCliPath?.trim() || 'wp' );
+	const command = [
+		'set -e',
+		`core_version=$(${ wpCliPath } core version --path=${ remotePath })`,
+		`site_url=$(${ wpCliPath } option get siteurl --path=${ remotePath })`,
+		`home_url=$(${ wpCliPath } option get home --path=${ remotePath })`,
+		`active_plugins=$(${ wpCliPath } plugin list --status=active --field=name --path=${ remotePath } | wc -l | tr -d ' ')`,
+		`if ${ wpCliPath } db check --quiet --path=${ remotePath }; then database_ok=true; else database_ok=false; fi`,
+		`printf '%s\\n%s\\n%s\\n%s\\n%s\\n' "$core_version" "$site_url" "$home_url" "$active_plugins" "$database_ok"`,
+	].join( ' && ' );
+	const [ coreVersion = '', siteUrl = '', homeUrl = '', pluginCount = '0', databaseOk = 'false' ] =
+		( await runConnectedSshCommand( client, command ) ).trim().split( '\n' );
+	const normalizedConnectionUrl = connection.siteUrl.replace( /\/+$/, '' );
+	const normalizedSiteUrl = siteUrl.replace( /\/+$/, '' );
+	const normalizedHomeUrl = homeUrl.replace( /\/+$/, '' );
+	const urlMatchesConnection =
+		normalizedSiteUrl === normalizedConnectionUrl && normalizedHomeUrl === normalizedConnectionUrl;
+	const activePluginCount = Number.parseInt( pluginCount, 10 );
+
+	return {
+		ok: databaseOk === 'true' && Boolean( coreVersion ) && urlMatchesConnection,
+		coreVersion,
+		databaseOk: databaseOk === 'true',
+		siteUrl,
+		homeUrl,
+		activePluginCount: Number.isFinite( activePluginCount ) ? activePluginCount : 0,
+		urlMatchesConnection,
+	};
+}
+
+type WpCliExtension = {
+	name: string;
+	title?: string;
+	status?: string;
+	version?: string;
+	update?: string;
+	update_version?: string;
+};
+
+function parseWpCliExtensions( output: string ): SelfHostedSshManagedExtension[] {
+	const parsed = JSON.parse( output || '[]' ) as WpCliExtension[];
+	return parsed.map( ( extension ) => ( {
+		name: extension.name,
+		title: extension.title || extension.name,
+		status: extension.status || 'unknown',
+		version: extension.version || '',
+		updateVersion:
+			extension.update_version ||
+			( extension.update && extension.update !== 'none' ? extension.update : null ),
+	} ) );
+}
+
+export async function getSelfHostedSshManagementStatus(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string
+): Promise< SelfHostedSshManagementStatus > {
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+	const client = await connectSshClient( parsed );
+	const remoteWordPressPath = parsed.auth.remoteWordPressPath.replace( /\/+$/, '' );
+	const remotePath = quoteRemoteShellArg( remoteWordPressPath );
+	const wpCliPath = quoteRemoteShellArg( parsed.auth.wpCliPath?.trim() || 'wp' );
+
+	try {
+		const httpStartedAt = Date.now();
+		const httpCheck = fetch( parsed.siteUrl, {
+			method: 'HEAD',
+			redirect: 'follow',
+			signal: AbortSignal.timeout( 10000 ),
+		} )
+			.then( ( response ) => ( {
+				status: response.status,
+				responseTimeMs: Date.now() - httpStartedAt,
+			} ) )
+			.catch( () => ( { status: null, responseTimeMs: null } ) );
+		const [
+			coreVersion,
+			phpVersion,
+			pluginOutput,
+			themeOutput,
+			cronOutput,
+			debugOutput,
+			diskOutput,
+			httpResult,
+		] = await Promise.all( [
+			runConnectedSshCommand( client, `${ wpCliPath } core version --path=${ remotePath }` ),
+			runConnectedSshCommand(
+				client,
+				`${ wpCliPath } eval 'echo PHP_VERSION;' --path=${ remotePath }`
+			),
+			runConnectedSshCommand(
+				client,
+				`${ wpCliPath } plugin list --fields=name,title,status,version,update_version --format=json --path=${ remotePath }`
+			),
+			runConnectedSshCommand(
+				client,
+				`${ wpCliPath } theme list --fields=name,title,status,version,update_version --format=json --path=${ remotePath }`
+			),
+			runConnectedSshCommand(
+				client,
+				`${ wpCliPath } cron event list --due-now --format=json --path=${ remotePath }`
+			).catch( () => '[]' ),
+			runConnectedSshCommand(
+				client,
+				`if test -f ${ quoteRemoteShellArg(
+					path.posix.join( remoteWordPressPath, 'wp-content', 'debug.log' )
+				) }; then printf 'true\\n'; wc -c < ${ quoteRemoteShellArg(
+					path.posix.join( remoteWordPressPath, 'wp-content', 'debug.log' )
+				) }; grep -Eic 'PHP Fatal error|Uncaught Error|Uncaught Exception' ${ quoteRemoteShellArg(
+					path.posix.join( remoteWordPressPath, 'wp-content', 'debug.log' )
+				) } || true; else printf 'false\\n0\\n0\\n'; fi`
+			),
+			runConnectedSshCommand(
+				client,
+				`printf '%s\\n%s\\n' "$(df -Pk ${ remotePath } | awk 'NR==2 {print $4 * 1024}')" "$(du -sk ${ remotePath } | awk '{print $1 * 1024}')"`
+			),
+			httpCheck,
+		] );
+		const [ debugExists = 'false', debugSize = '0', fatalErrors = '0' ] = debugOutput
+			.trim()
+			.split( '\n' );
+		const [ availableDisk = '0', wordpressDiskUsage = '0' ] = diskOutput.trim().split( '\n' );
+		const cronEvents = JSON.parse( cronOutput || '[]' ) as unknown[];
+		return {
+			coreVersion: coreVersion.trim(),
+			phpVersion: phpVersion.trim(),
+			plugins: parseWpCliExtensions( pluginOutput ),
+			themes: parseWpCliExtensions( themeOutput ),
+			dueCronEvents: cronEvents.length,
+			debugLogExists: debugExists === 'true',
+			debugLogSizeInBytes: Number.parseInt( debugSize, 10 ) || 0,
+			recentFatalErrorCount: Number.parseInt( fatalErrors, 10 ) || 0,
+			httpStatus: httpResult.status,
+			httpResponseTimeMs: httpResult.responseTimeMs,
+			availableDiskSpaceInBytes: Number.parseInt( availableDisk, 10 ) || 0,
+			wordpressDiskUsageInBytes: Number.parseInt( wordpressDiskUsage, 10 ) || 0,
+		};
+	} finally {
+		client.end();
+	}
+}
+
+/**
+ * Look up a plugin/theme in the WordPress.org directory to detect closed/removed extensions.
+ * Returns `known: false` for slugs the directory does not recognize (custom/premium), and
+ * `removed: true` when the directory marks the slug as closed. Network failures propagate so the
+ * caller can record an `unknown` advisory.
+ */
+const lookupWordPressDirectory: DirectoryLookup = async ( type, slug ) => {
+	const endpoint =
+		type === 'plugin'
+			? `https://api.wordpress.org/plugins/info/1.0/${ encodeURIComponent( slug ) }.json`
+			: `https://api.wordpress.org/themes/info/1.1/?action=theme_information&request[slug]=${ encodeURIComponent(
+					slug
+			  ) }`;
+	const response = await fetch( endpoint, { signal: AbortSignal.timeout( 10000 ) } );
+	if ( response.status === 404 ) {
+		return { removed: false, known: false };
+	}
+	if ( ! response.ok ) {
+		throw new Error( `Directory lookup failed with HTTP ${ response.status }.` );
+	}
+	const text = await response.text();
+	// The plugins endpoint returns the literal `null` for unknown slugs.
+	if ( ! text || text === 'null' ) {
+		return { removed: false, known: false };
+	}
+	const data = JSON.parse( text ) as { error?: string; closed?: boolean; slug?: string };
+	if ( data.error ) {
+		return { removed: false, known: false };
+	}
+	return { removed: data.closed === true, known: Boolean( data.slug ) || ! data.error };
+};
+
+/**
+ * Surface plugin/theme/core advisories for an SSH-managed site: extensions removed from the
+ * WordPress.org directory (critical) and extensions with available updates (warning). Uses the
+ * existing management inventory and a directory lookup; no paid vulnerability feed required.
+ */
+export async function getSelfHostedSshAdvisories(
+	event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string,
+	lookup: DirectoryLookup = lookupWordPressDirectory
+): Promise< SelfHostedSshAdvisory[] > {
+	const status = await getSelfHostedSshManagementStatus( event, localSiteId, connectionId );
+	const [ pluginAdvisories, themeAdvisories ] = await Promise.all( [
+		buildExtensionAdvisories( 'plugin', status.plugins, lookup ),
+		buildExtensionAdvisories( 'theme', status.themes, lookup ),
+	] );
+	const severityRank = { critical: 0, warning: 1, info: 2 } as const;
+	return [ ...pluginAdvisories, ...themeAdvisories ].sort(
+		( a, b ) => severityRank[ a.severity ] - severityRank[ b.severity ]
+	);
+}
+
+/**
+ * Detect the remote server stack (OS, web server, PHP, DB, sudo) over SSH. This is the shared
+ * foundation (doc 8.0) for server-config management: the result drives the adaptive Apache/nginx UI
+ * and the per-server command building in 8.1–8.3.
+ */
+export async function detectSelfHostedServerStack(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string
+): Promise< SelfHostedServerStack > {
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+
+	const docroot = parsed.auth.remoteWordPressPath.replace( /\/+$/, '' );
+	const client = await connectSshClient( parsed );
+	try {
+		const output = await runConnectedSshCommand( client, getServerStackProbeCommand( docroot ) );
+		const stack = parseServerStackProbe( output, docroot );
+		// Cache the detected capabilities (no secrets) so the UI can show them without re-probing.
+		await saveServerCapabilities(
+			localSiteId,
+			connectionId,
+			stack,
+			new Date().toISOString()
+		).catch( () => undefined );
+		return stack;
+	} finally {
+		client.end();
+	}
+}
+
+/**
+ * Return the cached server capabilities for a connection without an SSH round-trip (doc 8.4), or
+ * null if none are cached yet. The renderer shows these instantly, then calls
+ * `detectSelfHostedServerStack` to refresh.
+ */
+export async function getCachedSelfHostedServerStack(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string
+): Promise< { stack: SelfHostedServerStack; detectedAt: string } | null > {
+	return loadServerCapabilities( localSiteId, connectionId );
+}
+
+function getSelfHostedHtaccessPath( connection: SelfHostedSshConnectionWithAuth ): string {
+	return `${ connection.auth.remoteWordPressPath.replace( /\/+$/, '' ) }/.htaccess`;
+}
+
+/**
+ * Read the remote site's root `.htaccess` (doc 8.1). Returns empty content when the file does not
+ * exist so the renderer can offer to create one.
+ */
+export async function getSelfHostedHtaccess(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string
+): Promise< SelfHostedHtaccess > {
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+	const htaccessPath = getSelfHostedHtaccessPath( parsed );
+
+	const client = await connectSshClient( parsed );
+	try {
+		const output = await runConnectedSshCommand(
+			client,
+			`if test -f ${ quoteRemoteShellArg(
+				htaccessPath
+			) }; then printf '1\\n'; cat ${ quoteRemoteShellArg( htaccessPath ) }; else printf '0\\n'; fi`
+		);
+		const newlineIndex = output.indexOf( '\n' );
+		const existsFlag = output.slice( 0, newlineIndex ).trim();
+		const content = newlineIndex >= 0 ? output.slice( newlineIndex + 1 ) : '';
+		return {
+			exists: existsFlag === '1',
+			path: htaccessPath,
+			content: existsFlag === '1' ? content : '',
+		};
+	} finally {
+		client.end();
+	}
+}
+
+/**
+ * Write the remote site's root `.htaccess` (doc 8.1) through the safe-config-edit primitive: the
+ * previous file is backed up, the new content written, the web-server config validated, and the
+ * backup restored automatically if validation fails. Disabled for production connections and for
+ * non-Apache servers (nginx does not use `.htaccess`).
+ */
+export async function updateSelfHostedHtaccess(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string,
+	content: string,
+	now: number = Date.now()
+): Promise< { backupPath: string } > {
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+	if ( parsed.environmentType === 'production' ) {
+		throw new Error( 'Editing .htaccess is disabled for production connections.' );
+	}
+
+	const client = await connectSshClient( parsed );
+	try {
+		const stack = parseServerStackProbe(
+			await runConnectedSshCommand(
+				client,
+				getServerStackProbeCommand( parsed.auth.remoteWordPressPath.replace( /\/+$/, '' ) )
+			),
+			parsed.auth.remoteWordPressPath
+		);
+		if ( stack.webServer === 'nginx' ) {
+			throw new Error( 'This server runs nginx, which does not use .htaccess files.' );
+		}
+		const adapter = getWebServerAdapter( 'apache', stack.canSudo );
+		const { command, backupPath } = getSafeConfigEditCommand( {
+			targetPath: getSelfHostedHtaccessPath( parsed ),
+			contentBase64: Buffer.from( content, 'utf8' ).toString( 'base64' ),
+			testConfigCommand: adapter.testConfigCommand(),
+			timestamp: now,
+		} );
+		await runConnectedSshCommand( client, command );
+		return { backupPath };
+	} finally {
+		client.end();
+	}
+}
+
+async function detectStackOverClient(
+	client: Client,
+	connection: SelfHostedSshConnectionWithAuth
+): Promise< SelfHostedServerStack > {
+	const docroot = connection.auth.remoteWordPressPath.replace( /\/+$/, '' );
+	return parseServerStackProbe(
+		await runConnectedSshCommand( client, getServerStackProbeCommand( docroot ) ),
+		docroot
+	);
+}
+
+/**
+ * Validate and gracefully reload the remote web server (doc 8.1), optionally reloading PHP-FPM too.
+ * The config is tested first; a failed test aborts before reload so a bad config is never applied.
+ * Disabled for production connections.
+ */
+export async function reloadSelfHostedWebServer(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string,
+	options: { reloadPhpFpm?: boolean } = {}
+): Promise< { reloaded: boolean; webServer: string } > {
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+	if ( parsed.environmentType === 'production' ) {
+		throw new Error( 'Reloading the web server is disabled for production connections.' );
+	}
+
+	const client = await connectSshClient( parsed );
+	try {
+		const stack = await detectStackOverClient( client, parsed );
+		if ( stack.webServer === 'unknown' ) {
+			throw new Error( 'Could not detect Apache or nginx on the remote server.' );
+		}
+		const adapter = getWebServerAdapter( stack.webServer, stack.canSudo );
+		// Validate before reloading; abort on an invalid config.
+		await runConnectedSshCommand( client, adapter.testConfigCommand() );
+		await runConnectedSshCommand( client, adapter.reloadCommand() );
+		if ( options.reloadPhpFpm ) {
+			await runConnectedSshCommand( client, adapter.reloadPhpFpmCommand() );
+		}
+		return { reloaded: true, webServer: stack.webServer };
+	} finally {
+		client.end();
+	}
+}
+
+/**
+ * The config files Studio backs up for a connection: the site `.htaccess` and the per-domain vhost
+ * for the detected web server. Used to scope the config-backup browser (doc 8.5).
+ */
+function getSelfHostedConfigTargets(
+	connection: SelfHostedSshConnectionWithAuth,
+	webServer: SelfHostedServerStack[ 'webServer' ]
+): string[] {
+	const targets = [ getSelfHostedHtaccessPath( connection ) ];
+	const domain = new URL( connection.siteUrl ).hostname;
+	if ( webServer === 'nginx' ) {
+		targets.push( `/etc/nginx/sites-available/${ domain }.conf` );
+	} else if ( webServer === 'apache' ) {
+		targets.push( `/etc/apache2/sites-available/${ domain }.conf` );
+	}
+	return targets;
+}
+
+/**
+ * List the Studio config backups (`.studio-bak-*`) for the connection's known config files (doc
+ * 8.5), newest-first, so the renderer can offer a one-click restore.
+ */
+export async function listSelfHostedConfigBackups(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string
+): Promise< SelfHostedConfigBackup[] > {
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+
+	const client = await connectSshClient( parsed );
+	try {
+		const stack = await detectStackOverClient( client, parsed );
+		const targets = getSelfHostedConfigTargets( parsed, stack.webServer );
+		const output = await runConnectedSshCommand( client, getListConfigBackupsCommand( targets ) );
+		return parseConfigBackups( output );
+	} finally {
+		client.end();
+	}
+}
+
+/**
+ * Restore a config backup over its live file (doc 8.5), then validate and reload the web server.
+ * A pre-restore safety copy is taken and automatically restored if the config fails validation, so
+ * a restore can never leave the server with a broken config. Prod-gated; the backup path is verified
+ * to belong to a known config target.
+ */
+export async function restoreSelfHostedConfigBackup(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string,
+	backupPath: string,
+	now: number = Date.now()
+): Promise< { restored: boolean; safetyPath: string } > {
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+	if ( parsed.environmentType === 'production' ) {
+		throw new Error( 'Restoring server config is disabled for production connections.' );
+	}
+
+	const client = await connectSshClient( parsed );
+	try {
+		const stack = await detectStackOverClient( client, parsed );
+		const targets = getSelfHostedConfigTargets( parsed, stack.webServer );
+		const target = targets.find( ( candidate ) =>
+			backupPath.startsWith( `${ candidate }.studio-bak-` )
+		);
+		if ( ! target ) {
+			throw new Error( 'Backup does not belong to a known config file for this connection.' );
+		}
+		const adapter = getWebServerAdapter(
+			stack.webServer === 'unknown' ? 'apache' : stack.webServer,
+			stack.canSudo
+		);
+		const { command, safetyPath } = getRestoreConfigBackupCommand( {
+			target,
+			backupPath,
+			testConfigCommand: adapter.testConfigCommand(),
+			timestamp: now,
+		} );
+		await runConnectedSshCommand( client, command );
+		// Config validated inside the command; reload to apply the restored config.
+		await runConnectedSshCommand( client, adapter.reloadCommand() );
+		return { restored: true, safetyPath };
+	} finally {
+		client.end();
+	}
+}
+
+/**
+ * List PHP versions installed on the remote host (doc 8.1) by discovering `phpX.Y` binaries on the
+ * PATH, plus the currently active `php` version. Switching is host-specific and intentionally not
+ * automated here; the UI surfaces the options and guidance.
+ */
+export async function getSelfHostedPhpVersions(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string
+): Promise< SelfHostedPhpVersions > {
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+
+	const client = await connectSshClient( parsed );
+	try {
+		const output = await runConnectedSshCommand(
+			client,
+			[
+				'printf \'current=%s\\n\' "$(php -r \'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;\' 2>/dev/null)"',
+				// Discover php8.1, php8.2, … binaries anywhere on PATH.
+				"for dir in $(printf '%s' \"$PATH\" | tr ':' ' '); do ls \"$dir\"/php[0-9].[0-9] 2>/dev/null; done | sed -n 's@.*/php\\([0-9]\\.[0-9]\\)$@\\1@p' | sort -u | while read -r v; do printf 'available=%s\\n' \"$v\"; done",
+			].join( '; ' )
+		);
+		let current: string | null = null;
+		const available = new Set< string >();
+		for ( const line of output.split( '\n' ) ) {
+			const [ key, value ] = line.split( '=' );
+			if ( key === 'current' && value?.trim() ) {
+				current = value.trim();
+			} else if ( key === 'available' && value?.trim() ) {
+				available.add( value.trim() );
+			}
+		}
+		if ( current ) {
+			available.add( current );
+		}
+		return { current, available: [ ...available ].sort() };
+	} finally {
+		client.end();
+	}
+}
+
+function getConnectionHost( siteUrl: string ): string {
+	return new URL( siteUrl ).hostname;
+}
+
+/**
+ * Detect the live TLS certificate for the connection's domain (doc 8.2): issuer, covered domains,
+ * validity window, days-until-expiry, and whether certbot is installed for issue/renew.
+ */
+export async function getSelfHostedSslStatus(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string,
+	now: number = Date.now()
+): Promise< SelfHostedSslStatus > {
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+	const host = getConnectionHost( parsed.siteUrl );
+
+	const client = await connectSshClient( parsed );
+	try {
+		const output = await runConnectedSshCommand( client, getSslProbeCommand( host ) );
+		return parseSslProbe( output, now );
+	} finally {
+		client.end();
+	}
+}
+
+/**
+ * Provision (or renew/extend) a Let's Encrypt certificate via certbot's web-server plugin (doc 8.2)
+ * and optionally configure the HTTP→HTTPS redirect. Validates the web-server config and reloads
+ * afterward, and verifies the resulting certificate covers the requested domains. Disabled for
+ * production connections; requires certbot on the host. Domains/email are validated before any shell
+ * command is built.
+ */
+export async function provisionSelfHostedSsl(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string,
+	options: { domains?: string[]; email: string; redirect?: boolean; now?: number }
+): Promise< { ssl: SelfHostedSslStatus; covered: boolean } > {
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+	if ( parsed.environmentType === 'production' ) {
+		throw new Error( 'SSL provisioning is disabled for production connections.' );
+	}
+
+	const host = getConnectionHost( parsed.siteUrl );
+	const domains = ( options.domains?.length ? options.domains : [ host ] ).map( assertValidDomain );
+
+	const client = await connectSshClient( parsed );
+	try {
+		const stack = await detectStackOverClient( client, parsed );
+		if ( stack.webServer === 'unknown' ) {
+			throw new Error( 'Could not detect Apache or nginx on the remote server.' );
+		}
+		// certbot presence check.
+		const certbotCheck = await runConnectedSshCommand(
+			client,
+			'command -v certbot >/dev/null 2>&1 && printf 1 || printf 0'
+		);
+		if ( certbotCheck.trim() !== '1' ) {
+			throw new Error( 'certbot is not installed on the remote server.' );
+		}
+
+		await runConnectedSshCommand(
+			client,
+			getCertbotIssueCommand( {
+				webServer: stack.webServer,
+				domains,
+				email: options.email,
+				redirect: options.redirect ?? true,
+				canSudo: stack.canSudo,
+			} )
+		);
+
+		// Validate and reload so the new vhost/redirect takes effect.
+		const adapter = getWebServerAdapter( stack.webServer, stack.canSudo );
+		await runConnectedSshCommand( client, adapter.testConfigCommand() );
+		await runConnectedSshCommand( client, adapter.reloadCommand() );
+
+		const ssl = parseSslProbe(
+			await runConnectedSshCommand( client, getSslProbeCommand( host ) ),
+			options.now ?? Date.now()
+		);
+		const covered = domains.every(
+			( domain ) => ssl.domains.includes( domain ) || ssl.subject?.includes( domain )
+		);
+		return { ssl, covered };
+	} finally {
+		client.end();
+	}
+}
+
+/** Renew near-expiry Let's Encrypt certificates via `certbot renew` (doc 8.2). Prod-gated. */
+export async function renewSelfHostedSsl(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string,
+	now: number = Date.now()
+): Promise< SelfHostedSslStatus > {
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+	if ( parsed.environmentType === 'production' ) {
+		throw new Error( 'SSL renewal is disabled for production connections.' );
+	}
+
+	const host = getConnectionHost( parsed.siteUrl );
+	const client = await connectSshClient( parsed );
+	try {
+		const stack = await detectStackOverClient( client, parsed );
+		await runConnectedSshCommand( client, getCertbotRenewCommand( stack.canSudo ) );
+		if ( stack.webServer !== 'unknown' ) {
+			const adapter = getWebServerAdapter( stack.webServer, stack.canSudo );
+			await runConnectedSshCommand( client, adapter.reloadCommand() );
+		}
+		return parseSslProbe( await runConnectedSshCommand( client, getSslProbeCommand( host ) ), now );
+	} finally {
+		client.end();
+	}
+}
+
+function base64( value: string ): string {
+	return Buffer.from( value, 'utf8' ).toString( 'base64' );
+}
+
+/**
+ * Provision a brand-new WordPress site on a server that already has a web server + PHP + DB (doc
+ * 8.3): create the database and user, write and enable the vhost, then download and install
+ * WordPress with WP-CLI. The connection must point at the server to provision on; provisioning is
+ * gated behind a typed `PROVISION` confirmation and refused for production connections. All
+ * identifiers are validated and all secrets are passed base64-encoded so they never appear in a
+ * command string.
+ */
+export async function provisionSelfHostedSite(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string,
+	request: SelfHostedProvisionRequest,
+	confirmation: string
+): Promise< SelfHostedProvisionResult > {
+	if ( confirmation !== 'PROVISION' ) {
+		throw new Error( 'Provisioning a new site requires typing PROVISION to confirm.' );
+	}
+	const parsedRequest = selfHostedProvisionRequestSchema.parse( request );
+	const { domain, docroot, dbName, dbUser } = validateProvisionRequest( parsedRequest );
+
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+	if ( parsed.environmentType === 'production' ) {
+		throw new Error( 'Provisioning is disabled for production connections.' );
+	}
+
+	const wpCliPath = parsed.auth.wpCliPath?.trim() || 'wp';
+	const url = `http://${ domain }`;
+
+	const secretPrefix = buildSecretExportPrefix( {
+		STUDIO_DB_PASS: base64( parsedRequest.dbPassword ),
+		STUDIO_DB_ADMIN_PASS: base64( parsedRequest.adminDbPassword ),
+		STUDIO_WP_ADMIN_PASS: base64( parsedRequest.wpAdminPassword ),
+		STUDIO_SITE_TITLE: base64( parsedRequest.siteTitle ),
+	} );
+
+	const client = await connectSshClient( parsed );
+	try {
+		const stack = await detectStackOverClient( client, parsed );
+		if ( stack.webServer === 'unknown' ) {
+			throw new Error( 'Could not detect Apache or nginx on the remote server.' );
+		}
+		if ( ! stack.phpVersion ) {
+			throw new Error( 'PHP was not detected on the remote server.' );
+		}
+		if ( ! stack.dbEngine ) {
+			throw new Error( 'No MySQL/MariaDB client was detected on the remote server.' );
+		}
+
+		// 1) Database + user.
+		await runConnectedSshCommand(
+			client,
+			secretPrefix +
+				buildCreateDatabaseCommand( { dbName, dbUser, adminDbUser: parsedRequest.adminDbUser } )
+		);
+
+		// 2) Vhost: write the config (root-owned path → sudo tee from base64 to avoid quoting/
+		// injection), enable the site, validate the full config, then reload.
+		const adapter = getWebServerAdapter( stack.webServer, stack.canSudo );
+		const vhost = buildVhost( stack.webServer, { domain, docroot } );
+		const sudo = stack.canSudo ? 'sudo ' : '';
+		await runConnectedSshCommand( client, `${ sudo }mkdir -p '${ docroot }'` );
+		await runConnectedSshCommand(
+			client,
+			`printf '%s' '${ base64( vhost.content ) }' | base64 -d | ${ sudo }tee '${
+				vhost.path
+			}' >/dev/null`
+		);
+		if ( stack.webServer === 'nginx' ) {
+			await runConnectedSshCommand(
+				client,
+				`${ sudo }ln -sf '${ vhost.path }' '/etc/nginx/sites-enabled/${ domain }.conf'`
+			);
+		} else {
+			await runConnectedSshCommand( client, `${ sudo }a2ensite '${ domain }.conf'` );
+		}
+		// Validate the full config now that the site is enabled; reload to serve it.
+		await runConnectedSshCommand( client, adapter.testConfigCommand() );
+		await runConnectedSshCommand( client, adapter.reloadCommand() );
+
+		// 3) WordPress install.
+		const versionOutput = await runConnectedSshCommand(
+			client,
+			secretPrefix +
+				buildWordPressInstallCommand( {
+					wpCliPath,
+					docroot,
+					dbName,
+					dbUser,
+					url,
+					wpAdminUser: parsedRequest.wpAdminUser,
+					wpAdminEmail: parsedRequest.wpAdminEmail,
+				} )
+		);
+
+		// 4) Register the provisioned site as a new SSH sync connection so it is immediately usable
+		// as a sync target. It reuses the SSH transport credentials of the connection we provisioned
+		// from, but points at the new site's URL and document root. A freshly provisioned site is
+		// treated as development (never production), so push/pull are enabled.
+		const newConnectionId = randomUUID();
+		const provisionedConnection: SyncConnection = {
+			id: newConnectionId,
+			localSiteId,
+			provider: 'self-hosted-ssh',
+			syncMode: 'ssh-wp-cli',
+			siteUrl: url,
+			environmentType: 'development',
+			lastPullTimestamp: null,
+			lastPushTimestamp: null,
+			capabilities: {
+				canPull: true,
+				canPush: true,
+				canPushToProduction: false,
+				canSyncContent: true,
+				canSyncDatabase: true,
+				canSyncFiles: true,
+				requiresBackupBeforePush: true,
+				requiresDryRunBeforeProductionPush: true,
+			},
+			createdAt: new Date().toISOString(),
+			auth: { ...parsed.auth, remoteWordPressPath: docroot },
+		};
+		await saveSyncConnectionCredentials( localSiteId, provisionedConnection );
+		await addOrUpdateSyncConnection(
+			localSiteId,
+			stripSyncConnectionAuth( provisionedConnection )
+		);
+
+		return {
+			domain,
+			docroot,
+			url,
+			vhostPath: vhost.path,
+			wpVersion: versionOutput.trim().split( '\n' ).pop() || '',
+			connectionId: newConnectionId,
+		};
+	} finally {
+		client.end();
+	}
+}
+
+function validateMaintenanceSlug( slug: string ): string {
+	if ( ! /^[a-zA-Z0-9._-]+$/.test( slug ) ) {
+		throw new Error( 'Invalid plugin or theme identifier.' );
+	}
+	return slug;
+}
+
+function getSshMaintenanceBackupCommand(
+	connection: SelfHostedSshConnectionWithAuth,
+	selectedPaths: string[]
+): { command: string; backupPath: string } {
+	const remoteWordPressPath = connection.auth.remoteWordPressPath.replace( /\/+$/, '' );
+	const remotePath = quoteRemoteShellArg( remoteWordPressPath );
+	const wpCliPath = quoteRemoteShellArg( connection.auth.wpCliPath?.trim() || 'wp' );
+	const backupDirectory = getSelfHostedSshBackupDirectory( connection );
+	const backupId = `studio-backup-${ Date.now() }.tar.gz`;
+	const backupPath = path.posix.join( backupDirectory, backupId );
+	const workDirectory = `${ remoteWordPressPath }/.studio-maintenance-${ randomUUID() }`;
+	const manifest = JSON.stringify( {
+		id: backupId,
+		createdAt: new Date().toISOString(),
+		archivePath: backupPath,
+		includeDatabase: true,
+		selectedPaths,
+		sizeInBytes: 0,
+	} );
+	const command = [
+		'set -e',
+		`mkdir -p ${ quoteRemoteShellArg(
+			path.posix.join( workDirectory, 'sql' )
+		) } ${ quoteRemoteShellArg( backupDirectory ) }`,
+		`${ wpCliPath } db export ${ quoteRemoteShellArg(
+			path.posix.join( workDirectory, 'sql', 'database.sql' )
+		) } --path=${ remotePath } --add-drop-table`,
+	];
+	for ( const selectedPath of selectedPaths ) {
+		const normalizedPath = normalizeSelfHostedWpContentPath( selectedPath );
+		const sourcePath = path.posix.join( remoteWordPressPath, 'wp-content', normalizedPath );
+		const backupTarget = path.posix.join( workDirectory, 'wp-content', normalizedPath );
+		command.push(
+			`if test -e ${ quoteRemoteShellArg( sourcePath ) }; then mkdir -p ${ quoteRemoteShellArg(
+				path.posix.dirname( backupTarget )
+			) } && cp -a ${ quoteRemoteShellArg( sourcePath ) } ${ quoteRemoteShellArg(
+				backupTarget
+			) }; fi`
+		);
+	}
+	command.push(
+		`tar -czf ${ quoteRemoteShellArg( backupPath ) } -C ${ quoteRemoteShellArg(
+			workDirectory
+		) } .`,
+		`printf '%s' ${ quoteRemoteShellArg( manifest ) } > ${ quoteRemoteShellArg(
+			`${ backupPath }.json`
+		) }`,
+		`rm -rf ${ quoteRemoteShellArg( workDirectory ) }`
+	);
+	return { command: command.join( ' && ' ), backupPath };
+}
+
+export async function getSelfHostedSshDebugLog(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string
+): Promise< SelfHostedSshDebugLog > {
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+	const debugLogPath = path.posix.join(
+		parsed.auth.remoteWordPressPath.replace( /\/+$/, '' ),
+		'wp-content',
+		'debug.log'
+	);
+	const client = await connectSshClient( parsed );
+	try {
+		const output = await runConnectedSshCommand(
+			client,
+			`if test -f ${ quoteRemoteShellArg( debugLogPath ) }; then wc -c < ${ quoteRemoteShellArg(
+				debugLogPath
+			) }; wc -l < ${ quoteRemoteShellArg(
+				debugLogPath
+			) }; grep -Eic 'PHP Fatal error|Uncaught Error|Uncaught Exception' ${ quoteRemoteShellArg(
+				debugLogPath
+			) } || true; tail -n 500 ${ quoteRemoteShellArg(
+				debugLogPath
+			) }; else printf '0\\n0\\n0\\n'; fi`
+		);
+		const [ size = '0', lines = '0', fatalErrors = '0', ...contentLines ] = output.split( '\n' );
+		return {
+			content: contentLines.join( '\n' ).trimEnd(),
+			sizeInBytes: Number.parseInt( size, 10 ) || 0,
+			lines: Number.parseInt( lines, 10 ) || 0,
+			fatalErrorCount: Number.parseInt( fatalErrors, 10 ) || 0,
+		};
+	} finally {
+		client.end();
+	}
+}
+
+export async function downloadSelfHostedSshDebugLog(
+	event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string
+): Promise< string | null > {
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+	const debugLogPath = path.posix.join(
+		parsed.auth.remoteWordPressPath.replace( /\/+$/, '' ),
+		'wp-content',
+		'debug.log'
+	);
+	const parentWindow = BrowserWindow.fromWebContents( event.sender );
+	const saveDialogOptions = {
+		defaultPath: `debug-${ new URL( parsed.siteUrl ).hostname }.log`,
+		filters: [ { name: 'Log files', extensions: [ 'log', 'txt' ] } ],
+	};
+	const { canceled, filePath } = parentWindow
+		? await dialog.showSaveDialog( parentWindow, saveDialogOptions )
+		: await dialog.showSaveDialog( saveDialogOptions );
+	if ( canceled || ! filePath ) {
+		return null;
+	}
+	const client = await connectSshClient( parsed );
+	try {
+		const sftp = await getSftpClient( client );
+		await downloadSftpFile( sftp, debugLogPath, filePath );
+		sftp.end();
+		return filePath;
+	} finally {
+		client.end();
+	}
+}
+
+export async function runSelfHostedSshMaintenanceAction(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string,
+	action: SelfHostedSshMaintenanceAction
+): Promise< { message: string; backupPath?: string } > {
+	const parsedAction = selfHostedSshMaintenanceActionSchema.parse( action );
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+	const client = await connectSshClient( parsed );
+	const remotePath = quoteRemoteShellArg( parsed.auth.remoteWordPressPath );
+	const wpCliPath = quoteRemoteShellArg( parsed.auth.wpCliPath?.trim() || 'wp' );
+
+	try {
+		switch ( parsedAction.action ) {
+			case 'flush-cache':
+				await runConnectedSshCommand( client, `${ wpCliPath } cache flush --path=${ remotePath }` );
+				return { message: 'Remote object cache flushed.' };
+			case 'run-cron':
+				await runConnectedSshCommand(
+					client,
+					`${ wpCliPath } cron event run --due-now --path=${ remotePath }`
+				);
+				return { message: 'Due cron events executed.' };
+			case 'clear-debug-log': {
+				const debugLogPath = path.posix.join(
+					parsed.auth.remoteWordPressPath.replace( /\/+$/, '' ),
+					'wp-content',
+					'debug.log'
+				);
+				await runConnectedSshCommand(
+					client,
+					`if test -f ${ quoteRemoteShellArg( debugLogPath ) }; then : > ${ quoteRemoteShellArg(
+						debugLogPath
+					) }; fi`
+				);
+				return { message: 'Remote debug log cleared.' };
+			}
+			case 'update-plugin':
+			case 'update-theme': {
+				if ( parsed.environmentType === 'production' ) {
+					throw new Error( 'Plugin and theme updates are disabled for production connections.' );
+				}
+				const name = validateMaintenanceSlug( parsedAction.name );
+				const directory = parsedAction.action === 'update-plugin' ? 'plugins' : 'themes';
+				const { command: backupCommand, backupPath } = getSshMaintenanceBackupCommand( parsed, [
+					`${ directory }/${ name }`,
+				] );
+				await runConnectedSshCommand( client, backupCommand );
+				const commandName =
+					parsedAction.action === 'update-plugin' ? 'plugin update' : 'theme update';
+				await runConnectedSshCommand(
+					client,
+					`${ wpCliPath } ${ commandName } ${ quoteRemoteShellArg( name ) } --path=${ remotePath }`
+				);
+				const verification = await verifySelfHostedSshSite( client, parsed );
+				if ( ! verification.ok ) {
+					const rollback = await rollbackFailedSshOperation( client, parsed, {
+						id: path.posix.basename( backupPath ),
+						createdAt: new Date().toISOString(),
+						archivePath: backupPath,
+						includeDatabase: true,
+						selectedPaths: [ `${ directory }/${ name }` ],
+						sizeInBytes: 0,
+					} );
+					throw new Error(
+						rollback.verification.ok
+							? `Update verification failed and Studio restored the previous version. Failed-state backup: ${ rollback.safetyBackupPath }.`
+							: `Update and automatic rollback verification both failed. Original backup: ${ backupPath }. Failed-state backup: ${ rollback.safetyBackupPath }.`
+					);
+				}
+				return {
+					message: `${ parsedAction.action === 'update-plugin' ? 'Plugin' : 'Theme' } updated.`,
+					backupPath,
+				};
+			}
+			case 'update-extensions': {
+				if ( parsed.environmentType === 'production' ) {
+					throw new Error( 'Bulk updates are disabled for production connections.' );
+				}
+				const plugins = parsedAction.plugins.map( validateMaintenanceSlug );
+				const themes = parsedAction.themes.map( validateMaintenanceSlug );
+				if ( plugins.length + themes.length === 0 ) {
+					throw new Error( 'Select at least one plugin or theme to update.' );
+				}
+				const selectedPaths = [
+					...plugins.map( ( name ) => `plugins/${ name }` ),
+					...themes.map( ( name ) => `themes/${ name }` ),
+				];
+				const { command: backupCommand, backupPath } = getSshMaintenanceBackupCommand(
+					parsed,
+					selectedPaths
+				);
+				await runConnectedSshCommand( client, backupCommand );
+				for ( const name of plugins ) {
+					await runConnectedSshCommand(
+						client,
+						`${ wpCliPath } plugin update ${ quoteRemoteShellArg( name ) } --path=${ remotePath }`
+					);
+				}
+				for ( const name of themes ) {
+					await runConnectedSshCommand(
+						client,
+						`${ wpCliPath } theme update ${ quoteRemoteShellArg( name ) } --path=${ remotePath }`
+					);
+				}
+				const verification = await verifySelfHostedSshSite( client, parsed );
+				if ( ! verification.ok ) {
+					const rollback = await rollbackFailedSshOperation( client, parsed, {
+						id: path.posix.basename( backupPath ),
+						createdAt: new Date().toISOString(),
+						archivePath: backupPath,
+						includeDatabase: true,
+						selectedPaths,
+						sizeInBytes: 0,
+					} );
+					throw new Error(
+						rollback.verification.ok
+							? `Bulk update verification failed and Studio restored the previous versions. Failed-state backup: ${ rollback.safetyBackupPath }.`
+							: `Bulk update and automatic rollback verification both failed. Original backup: ${ backupPath }.`
+					);
+				}
+				return {
+					message: `Updated ${ plugins.length } plugins and ${ themes.length } themes.`,
+					backupPath,
+				};
+			}
+			case 'update-core': {
+				if ( parsed.environmentType === 'production' ) {
+					throw new Error( 'WordPress core updates are disabled for production connections.' );
+				}
+				const previousVersion = (
+					await runConnectedSshCommand(
+						client,
+						`${ wpCliPath } core version --path=${ remotePath }`
+					)
+				).trim();
+				const { command: backupCommand, backupPath } = getSshMaintenanceBackupCommand( parsed, [] );
+				await runConnectedSshCommand( client, backupCommand );
+				await runConnectedSshCommand(
+					client,
+					`${ wpCliPath } core update --path=${ remotePath } && ${ wpCliPath } core update-db --path=${ remotePath }`
+				);
+				const verification = await verifySelfHostedSshSite( client, parsed );
+				if ( ! verification.ok ) {
+					await runConnectedSshCommand(
+						client,
+						`${ wpCliPath } core download --version=${ quoteRemoteShellArg(
+							previousVersion
+						) } --force --skip-content --path=${ remotePath }`
+					);
+					const rollback = await rollbackFailedSshOperation( client, parsed, {
+						id: path.posix.basename( backupPath ),
+						createdAt: new Date().toISOString(),
+						archivePath: backupPath,
+						includeDatabase: true,
+						selectedPaths: [],
+						sizeInBytes: 0,
+					} );
+					throw new Error(
+						rollback.verification.ok
+							? `Core update verification failed and Studio restored WordPress ${ previousVersion }.`
+							: `Core update and automatic rollback verification both failed. Backup: ${ backupPath }.`
+					);
+				}
+				return { message: 'WordPress core updated.', backupPath };
+			}
+		}
+	} finally {
+		client.end();
+	}
+}
+
+async function readSftpFile( sftp: SFTPWrapper, remotePath: string ): Promise< Buffer > {
+	return new Promise( ( resolve, reject ) => {
+		sftp.readFile( remotePath, ( error, contents ) => {
+			if ( error ) {
+				reject( error );
+				return;
+			}
+			resolve( contents );
+		} );
+	} );
+}
+
+function shouldIgnoreIncrementalPath( relativePath: string ): boolean {
+	return (
+		relativePath === 'database' ||
+		relativePath.startsWith( 'database/' ) ||
+		relativePath === 'db.php' ||
+		relativePath === 'debug.log' ||
+		relativePath
+			.split( '/' )
+			.some( ( segment ) => [ '.git', 'node_modules', 'cache' ].includes( segment ) )
+	);
+}
+
+async function getLocalWpContentHashes( localSiteId: string ): Promise< Map< string, string > > {
+	const site = SiteServer.get( localSiteId );
+	if ( ! site ) {
+		throw new Error( 'Site not found.' );
+	}
+	const wpContentPath = path.join( site.details.path, 'wp-content' );
+	const entries = await fsPromises.readdir( wpContentPath, {
+		recursive: true,
+		withFileTypes: true,
+	} );
+	const hashes = new Map< string, string >();
+	for ( const entry of entries ) {
+		if ( ! entry.isFile() ) {
+			continue;
+		}
+		const fullPath = path.join( entry.parentPath, entry.name );
+		const relativePath = path.relative( wpContentPath, fullPath ).replace( /\\/g, '/' );
+		if ( shouldIgnoreIncrementalPath( relativePath ) ) {
+			continue;
+		}
+		const hash = createHash( 'sha256' )
+			.update( await fsPromises.readFile( fullPath ) )
+			.digest( 'hex' );
+		hashes.set( relativePath, hash );
+	}
+	return hashes;
+}
+
+async function getRemoteWpContentHashes(
+	client: Client,
+	connection: SelfHostedSshConnectionWithAuth
+): Promise< Map< string, string > > {
+	const remoteWordPressPath = connection.auth.remoteWordPressPath.replace( /\/+$/, '' );
+	const wpContentPath = path.posix.join( remoteWordPressPath, 'wp-content' );
+	const output = await runConnectedSshCommand(
+		client,
+		`cd ${ quoteRemoteShellArg(
+			wpContentPath
+		) } && find . -type f -not -path './database/*' -not -path './.git/*' -not -path '*/node_modules/*' -not -path '*/cache/*' -not -name 'db.php' -not -name 'debug.log' -exec sha256sum {} \\;`
+	);
+	const hashes = new Map< string, string >();
+	for ( const line of output.trim().split( '\n' ) ) {
+		const match = line.match( /^([a-f0-9]{64})\s+\*?\.\/(.+)$/ );
+		if ( match ) {
+			hashes.set( match[ 2 ], match[ 1 ] );
+		}
+	}
+	return hashes;
+}
+
+export async function previewSelfHostedSshIncrementalSync(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string
+): Promise< SelfHostedSshIncrementalPreview > {
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+	const client = await connectSshClient( parsed );
+	try {
+		const [ localHashes, remoteHashes ] = await Promise.all( [
+			getLocalWpContentHashes( localSiteId ),
+			getRemoteWpContentHashes( client, parsed ),
+		] );
+		const changed: string[] = [];
+		const localOnly: string[] = [];
+		const remoteOnly: string[] = [];
+		let unchangedCount = 0;
+		for ( const [ filePath, localHash ] of localHashes ) {
+			const remoteHash = remoteHashes.get( filePath );
+			if ( ! remoteHash ) {
+				localOnly.push( filePath );
+			} else if ( remoteHash !== localHash ) {
+				changed.push( filePath );
+			} else {
+				unchangedCount++;
+			}
+		}
+		for ( const filePath of remoteHashes.keys() ) {
+			if ( ! localHashes.has( filePath ) ) {
+				remoteOnly.push( filePath );
+			}
+		}
+		return {
+			changed: changed.sort(),
+			localOnly: localOnly.sort(),
+			remoteOnly: remoteOnly.sort(),
+			unchangedCount,
+		};
+	} finally {
+		client.end();
+	}
+}
+
+export async function applySelfHostedSshIncrementalSync(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string,
+	preview: SelfHostedSshIncrementalPreview
+): Promise< { backupPath: string; verification: SelfHostedSshVerification } > {
+	const parsedPreview = selfHostedSshIncrementalPreviewSchema.parse( preview );
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+	if ( parsed.environmentType === 'production' ) {
+		throw new Error( 'Incremental file sync is disabled for production connections.' );
+	}
+	const validatedPaths = [
+		...parsedPreview.changed,
+		...parsedPreview.localOnly,
+		...parsedPreview.remoteOnly,
+	].map( normalizeSelfHostedWpContentPath );
+	const site = SiteServer.get( localSiteId );
+	if ( ! site ) {
+		throw new Error( 'Site not found.' );
+	}
+	const client = await connectSshClient( parsed );
+	const remoteWordPressPath = parsed.auth.remoteWordPressPath.replace( /\/+$/, '' );
+	const { command: backupCommand, backupPath } = getSshMaintenanceBackupCommand(
+		parsed,
+		validatedPaths
+	);
+	try {
+		await runConnectedSshCommand( client, backupCommand );
+		const sftp = await getSftpClient( client );
+		for ( const relativePath of [ ...parsedPreview.changed, ...parsedPreview.localOnly ] ) {
+			const normalizedPath = normalizeSelfHostedWpContentPath( relativePath );
+			const localPath = path.join( site.details.path, 'wp-content', normalizedPath );
+			const remotePath = path.posix.join( remoteWordPressPath, 'wp-content', normalizedPath );
+			await runConnectedSshCommand(
+				client,
+				`mkdir -p ${ quoteRemoteShellArg( path.posix.dirname( remotePath ) ) }`
+			);
+			await uploadSftpFile( sftp, localPath, remotePath );
+		}
+		sftp.end();
+		for ( const relativePath of parsedPreview.remoteOnly ) {
+			const normalizedPath = normalizeSelfHostedWpContentPath( relativePath );
+			await runConnectedSshCommand(
+				client,
+				`rm -f ${ quoteRemoteShellArg(
+					path.posix.join( remoteWordPressPath, 'wp-content', normalizedPath )
+				) }`
+			);
+		}
+		const verification = await verifySelfHostedSshSite( client, parsed );
+		if ( ! verification.ok ) {
+			const rollback = await rollbackFailedSshOperation( client, parsed, {
+				id: path.posix.basename( backupPath ),
+				createdAt: new Date().toISOString(),
+				archivePath: backupPath,
+				includeDatabase: true,
+				selectedPaths: validatedPaths,
+				sizeInBytes: 0,
+			} );
+			throw new Error(
+				rollback.verification.ok
+					? `Incremental sync verification failed and Studio restored the previous files.`
+					: `Incremental sync and rollback verification failed. Backup: ${ backupPath }.`
+			);
+		}
+		return { backupPath, verification };
+	} finally {
+		client.end();
+	}
+}
+
+async function createSelfHostedSshPullArchive(
+	connection: SelfHostedSshConnectionWithAuth,
+	localSiteId: string,
+	options: SelfHostedSshPullOptions,
+	onDownloadProgress?: ( progress: number ) => void
+): Promise< { archivePath: string; remoteArchivePath: string } > {
+	const client = await connectSshClient( connection );
+	const remoteWorkDir = getRemoteStudioSyncWorkDir( connection );
+	const tempDir = path.join( app.getPath( 'temp' ), 'com.wordpress.studio', 'self-hosted-pulls' );
+	await fsPromises.mkdir( tempDir, { recursive: true } );
+	const archivePath = path.join( tempDir, `self-hosted-${ localSiteId }-${ randomUUID() }.tar.gz` );
+	let remoteArchivePath = '';
+
+	try {
+		remoteArchivePath = (
+			await runConnectedSshCommand(
+				client,
+				getSshPullArchiveCommand( connection, remoteWorkDir, options )
+			)
+		).trim();
+		if ( ! remoteArchivePath ) {
+			throw new Error( 'Remote archive path was not returned.' );
+		}
+		const sftp = await getSftpClient( client );
+		await downloadSftpFile( sftp, remoteArchivePath, archivePath, onDownloadProgress );
+		sftp.end();
+		return { archivePath, remoteArchivePath };
+	} finally {
+		await cleanupRemoteWorkDir( client, remoteWorkDir );
+		client.end();
+	}
+}
+
+function getSelfHostedSshPushSelection( options: SelfHostedSshPushOptions ): {
+	includeDatabase: boolean;
+	includeWpContent: boolean;
+	selectedPaths: string[];
+} {
+	const isFullPush = options.optionsToSync.includes( 'all' );
+	const includeDatabase = isFullPush || options.optionsToSync.includes( 'sqls' );
+	const includeWpContent =
+		isFullPush ||
+		options.optionsToSync.some( ( option ) =>
+			[ 'paths', 'uploads', 'plugins', 'themes', 'contents' ].includes( option )
+		);
+	const selectedPaths = isFullPush
+		? [ '' ]
+		: ( options.specificSelectionPaths ?? [] ).map( normalizeSelfHostedWpContentPath );
+
+	if (
+		( isFullPush && options.optionsToSync.length !== 1 ) ||
+		( ! includeDatabase && ! includeWpContent ) ||
+		( includeWpContent && selectedPaths.length === 0 )
+	) {
+		throw new Error( 'Select at least one database or wp-content item to push.' );
+	}
+
+	return { includeDatabase, includeWpContent, selectedPaths };
+}
+
+async function createSelfHostedSshPushArchive(
+	event: IpcMainInvokeEvent,
+	localSiteId: string,
+	options: SelfHostedSshPushOptions
+): Promise< { archivePath: string; localSiteUrl: string } > {
+	const site = SiteServer.get( localSiteId );
+	if ( ! site ) {
+		throw new Error( 'Site not found.' );
+	}
+	const { includeDatabase, includeWpContent, selectedPaths } =
+		getSelfHostedSshPushSelection( options );
+	const tempDir = path.join(
+		app.getPath( 'temp' ),
+		'com.wordpress.studio',
+		'self-hosted-pushes',
+		randomUUID()
+	);
+	await fsPromises.mkdir( tempDir, { recursive: true } );
+	const archivePath = path.join( tempDir, `self-hosted-${ localSiteId }.tar.gz` );
+	const mode = includeDatabase && includeWpContent ? 'full' : includeWpContent ? 'content' : 'db';
+
+	await exportSite( event, localSiteId, archivePath, {
+		mode,
+		showErrorModal: true,
+		showNotification: false,
+		splitDatabaseDumpByTable: false,
+		specificSelectionPaths: includeWpContent ? selectedPaths : undefined,
+		applyDeployIgnore: true,
+	} );
+
+	return { archivePath, localSiteUrl: getSiteUrl( site.details ) };
+}
+
+function getSshPushRestoreCommand(
+	connection: SelfHostedSshConnectionWithAuth,
+	remoteWorkDir: string,
+	options: SelfHostedSshPushOptions,
+	localSiteUrl: string
+): { command: string; remoteArchivePath: string; backupPath: string } {
+	const { includeDatabase, includeWpContent, selectedPaths } =
+		getSelfHostedSshPushSelection( options );
+	const wpCliPath = quoteRemoteShellArg( connection.auth.wpCliPath?.trim() || 'wp' );
+	const remoteWordPressPath = connection.auth.remoteWordPressPath.replace( /\/+$/, '' );
+	const remotePath = quoteRemoteShellArg( remoteWordPressPath );
+	const workDir = quoteRemoteShellArg( remoteWorkDir );
+	const remoteArchivePath = `${ remoteWorkDir }/studio-push.tar.gz`;
+	const backupDirectory = `${ remoteWordPressPath }/.studio-backups`;
+	const backupId = `studio-backup-${ Date.now() }.tar.gz`;
+	const backupPath = `${ backupDirectory }/${ backupId }`;
+	const backupManifestPath = `${ backupPath }.json`;
+	const backupManifest = JSON.stringify( {
+		id: backupId,
+		createdAt: new Date().toISOString(),
+		archivePath: backupPath,
+		includeDatabase,
+		selectedPaths,
+		sizeInBytes: 0,
+	} );
+	const commands = [
+		'set -e',
+		`test -d ${ remotePath }`,
+		`mkdir -p ${ workDir }/extract ${ workDir }/backup/sql ${ workDir }/backup/wp-content ${ quoteRemoteShellArg(
+			backupDirectory
+		) }`,
+		`tar -xzf ${ quoteRemoteShellArg( remoteArchivePath ) } -C ${ workDir }/extract`,
+	];
+
+	if ( includeDatabase ) {
+		commands.push(
+			`${ wpCliPath } db export ${ workDir }/backup/sql/database.sql --path=${ remotePath } --add-drop-table`
+		);
+	}
+
+	if ( includeWpContent ) {
+		for ( const selectedPath of selectedPaths ) {
+			if ( selectedPath === '' ) {
+				commands.push( `cp -a ${ remotePath }/wp-content/. ${ workDir }/backup/wp-content/` );
+				continue;
+			}
+			const source = quoteRemoteShellArg(
+				path.posix.join( remoteWordPressPath, 'wp-content', selectedPath )
+			);
+			const destination = quoteRemoteShellArg(
+				path.posix.join( remoteWorkDir, 'backup', 'wp-content', selectedPath )
+			);
+			const destinationParent = quoteRemoteShellArg(
+				path.posix.dirname( path.posix.join( remoteWorkDir, 'backup', 'wp-content', selectedPath ) )
+			);
+			commands.push(
+				`if test -e ${ source }; then mkdir -p ${ destinationParent } && cp -a ${ source } ${ destination }; fi`
+			);
+		}
+	}
+
+	commands.push(
+		`tar -czf ${ quoteRemoteShellArg( backupPath ) } -C ${ workDir }/backup .`,
+		`printf '%s' ${ quoteRemoteShellArg( backupManifest ) } > ${ quoteRemoteShellArg(
+			backupManifestPath
+		) }`
+	);
+
+	if ( includeWpContent ) {
+		commands.push( `mkdir -p ${ remotePath }/wp-content` );
+		for ( const selectedPath of selectedPaths ) {
+			if ( selectedPath === '' ) {
+				commands.push(
+					`find ${ remotePath }/wp-content -mindepth 1 -maxdepth 1 -exec rm -rf {} +`,
+					`cp -a ${ workDir }/extract/wp-content/. ${ remotePath }/wp-content/`
+				);
+				continue;
+			}
+			const source = quoteRemoteShellArg(
+				path.posix.join( remoteWorkDir, 'extract', 'wp-content', selectedPath )
+			);
+			const destination = quoteRemoteShellArg(
+				path.posix.join( remoteWordPressPath, 'wp-content', selectedPath )
+			);
+			const destinationParent = quoteRemoteShellArg(
+				path.posix.dirname( path.posix.join( remoteWordPressPath, 'wp-content', selectedPath ) )
+			);
+			commands.push(
+				`mkdir -p ${ destinationParent }`,
+				`rm -rf ${ destination }`,
+				`cp -a ${ source } ${ destination }`
+			);
+		}
+	}
+
+	if ( includeDatabase ) {
+		commands.push(
+			`sql_file=$(find ${ workDir }/extract/sql -type f -name '*.sql' | head -n 1)`,
+			`test -n "$sql_file"`,
+			`${ wpCliPath } db reset --yes --path=${ remotePath }`,
+			`${ wpCliPath } db import "$sql_file" --path=${ remotePath }`,
+			`${ wpCliPath } search-replace ${ quoteRemoteShellArg(
+				localSiteUrl
+			) } ${ quoteRemoteShellArg(
+				connection.siteUrl.replace( /\/+$/, '' )
+			) } --path=${ remotePath } --all-tables-with-prefix --skip-columns=guid`,
+			`(${ wpCliPath } cache flush --path=${ remotePath } || true)`
+		);
+	}
+
+	commands.push( `printf '%s\\n' ${ quoteRemoteShellArg( backupPath ) }` );
+	return { command: commands.join( ' && ' ), remoteArchivePath, backupPath };
+}
+
+function getSelfHostedSshBackupDirectory( connection: SelfHostedSshConnectionWithAuth ): string {
+	return path.posix.join(
+		connection.auth.remoteWordPressPath.replace( /\/+$/, '' ),
+		'.studio-backups'
+	);
+}
+
+async function getSelfHostedSshPushDiskEstimate(
+	connection: SelfHostedSshConnectionWithAuth,
+	options: SelfHostedSshPushOptions
+): Promise< {
+	availableDiskSpaceInBytes: number;
+	estimatedBackupSizeInBytes: number;
+} > {
+	const { includeDatabase, includeWpContent, selectedPaths } =
+		getSelfHostedSshPushSelection( options );
+	const remoteWordPressPath = connection.auth.remoteWordPressPath.replace( /\/+$/, '' );
+	const remotePath = quoteRemoteShellArg( remoteWordPressPath );
+	const wpCliPath = quoteRemoteShellArg( connection.auth.wpCliPath?.trim() || 'wp' );
+	const commands = [
+		'set -e',
+		`available=$(df -Pk ${ remotePath } | awk 'NR==2 {print $4 * 1024}')`,
+		'backup_size=0',
+	];
+
+	if ( includeDatabase ) {
+		commands.push(
+			`db_size=$(${ wpCliPath } db size --size_format=b --path=${ remotePath } 2>/dev/null | tail -n 1 || printf '0')`,
+			`case "$db_size" in ''|*[!0-9]*) db_size=0 ;; esac`,
+			`backup_size=$((backup_size + db_size))`
+		);
+	}
+
+	if ( includeWpContent ) {
+		for ( const selectedPath of selectedPaths ) {
+			const targetPath =
+				selectedPath === ''
+					? path.posix.join( remoteWordPressPath, 'wp-content' )
+					: path.posix.join( remoteWordPressPath, 'wp-content', selectedPath );
+			commands.push(
+				`if test -e ${ quoteRemoteShellArg(
+					targetPath
+				) }; then path_size=$(du -sk ${ quoteRemoteShellArg(
+					targetPath
+				) } | awk '{print $1 * 1024}'); backup_size=$((backup_size + path_size)); fi`
+			);
+		}
+	}
+
+	commands.push( `printf '%s\\n%s\\n' "$available" "$backup_size"` );
+	const client = await connectSshClient( connection );
+	try {
+		const output = await runConnectedSshCommand( client, commands.join( ' && ' ) );
+		const [ available, backupSize ] = output
+			.trim()
+			.split( /\s+/ )
+			.map( ( value ) => Number.parseInt( value, 10 ) );
+		if ( ! Number.isFinite( available ) || ! Number.isFinite( backupSize ) ) {
+			throw new Error( 'Unable to determine remote disk space.' );
+		}
+		return {
+			availableDiskSpaceInBytes: available,
+			estimatedBackupSizeInBytes: backupSize,
+		};
+	} finally {
+		client.end();
+	}
+}
+
+async function readSelfHostedSshBackupManifest(
+	sftp: SFTPWrapper,
+	backupDirectory: string,
+	manifestName: string
+): Promise< SelfHostedSshBackup > {
+	if ( ! /^studio-(?:backup|pre-restore)-\d+\.tar\.gz\.json$/.test( manifestName ) ) {
+		throw new Error( 'Invalid SSH backup manifest name.' );
+	}
+	const manifestPath = path.posix.join( backupDirectory, manifestName );
+	const parsed = selfHostedSshBackupSchema.parse(
+		JSON.parse( ( await readSftpFile( sftp, manifestPath ) ).toString( 'utf8' ) )
+	);
+	const expectedArchivePath = path.posix.join(
+		backupDirectory,
+		manifestName.replace( /\.json$/, '' )
+	);
+	if ( parsed.archivePath !== expectedArchivePath ) {
+		throw new Error( 'SSH backup archive path does not match its manifest.' );
+	}
+	return {
+		...parsed,
+		selectedPaths: parsed.selectedPaths.map( normalizeSelfHostedWpContentPath ),
+	};
+}
+
+export async function listSelfHostedSshBackups(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string
+): Promise< SelfHostedSshBackup[] > {
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+	const backupDirectory = getSelfHostedSshBackupDirectory( parsed );
+	const client = await connectSshClient( parsed );
+
+	try {
+		const sftp = await getSftpClient( client );
+		let entries: FileEntryWithStats[];
+		try {
+			entries = await readSftpDirectory( sftp, backupDirectory );
+		} catch {
+			sftp.end();
+			return [];
+		}
+		const backups: SelfHostedSshBackup[] = [];
+		for ( const entry of entries ) {
+			if ( ! entry.filename.endsWith( '.tar.gz.json' ) ) {
+				continue;
+			}
+			try {
+				const backup = await readSelfHostedSshBackupManifest(
+					sftp,
+					backupDirectory,
+					entry.filename
+				);
+				const archiveEntry = entries.find( ( candidate ) => candidate.filename === backup.id );
+				if ( archiveEntry ) {
+					backups.push( { ...backup, sizeInBytes: archiveEntry.attrs.size } );
+				}
+			} catch {
+				// Ignore incomplete or invalid backup pairs.
+			}
+		}
+		sftp.end();
+		return backups.sort( ( a, b ) => b.createdAt.localeCompare( a.createdAt ) );
+	} finally {
+		client.end();
+	}
+}
+
+function getSshBackupRestoreCommand(
+	connection: SelfHostedSshConnectionWithAuth,
+	backup: SelfHostedSshBackup,
+	remoteWorkDir: string
+): { command: string; safetyBackupPath: string } {
+	const wpCliPath = quoteRemoteShellArg( connection.auth.wpCliPath?.trim() || 'wp' );
+	const remoteWordPressPath = connection.auth.remoteWordPressPath.replace( /\/+$/, '' );
+	const remotePath = quoteRemoteShellArg( remoteWordPressPath );
+	const workDir = quoteRemoteShellArg( remoteWorkDir );
+	const backupDirectory = getSelfHostedSshBackupDirectory( connection );
+	const safetyBackupId = `studio-pre-restore-${ Date.now() }.tar.gz`;
+	const safetyBackupPath = path.posix.join( backupDirectory, safetyBackupId );
+	const safetyManifest = JSON.stringify( {
+		id: safetyBackupId,
+		createdAt: new Date().toISOString(),
+		archivePath: safetyBackupPath,
+		includeDatabase: backup.includeDatabase,
+		selectedPaths: backup.selectedPaths,
+		sizeInBytes: 0,
+	} );
+	const commands = [
+		'set -e',
+		`test -f ${ quoteRemoteShellArg( backup.archivePath ) }`,
+		`mkdir -p ${ workDir }/restore ${ workDir }/safety/sql ${ workDir }/safety/wp-content`,
+	];
+
+	if ( backup.includeDatabase ) {
+		commands.push(
+			`${ wpCliPath } db export ${ workDir }/safety/sql/database.sql --path=${ remotePath } --add-drop-table`
+		);
+	}
+
+	for ( const selectedPath of backup.selectedPaths ) {
+		if ( selectedPath === '' ) {
+			commands.push( `cp -a ${ remotePath }/wp-content/. ${ workDir }/safety/wp-content/` );
+			continue;
+		}
+		const currentSource = quoteRemoteShellArg(
+			path.posix.join( remoteWordPressPath, 'wp-content', selectedPath )
+		);
+		const safetyDestination = quoteRemoteShellArg(
+			path.posix.join( remoteWorkDir, 'safety', 'wp-content', selectedPath )
+		);
+		const safetyParent = quoteRemoteShellArg(
+			path.posix.dirname( path.posix.join( remoteWorkDir, 'safety', 'wp-content', selectedPath ) )
+		);
+		commands.push(
+			`if test -e ${ currentSource }; then mkdir -p ${ safetyParent } && cp -a ${ currentSource } ${ safetyDestination }; fi`
+		);
+	}
+
+	commands.push(
+		`tar -czf ${ quoteRemoteShellArg( safetyBackupPath ) } -C ${ workDir }/safety .`,
+		`printf '%s' ${ quoteRemoteShellArg( safetyManifest ) } > ${ quoteRemoteShellArg(
+			`${ safetyBackupPath }.json`
+		) }`,
+		`tar -xzf ${ quoteRemoteShellArg( backup.archivePath ) } -C ${ workDir }/restore`
+	);
+
+	for ( const selectedPath of backup.selectedPaths ) {
+		if ( selectedPath === '' ) {
+			commands.push(
+				`find ${ remotePath }/wp-content -mindepth 1 -maxdepth 1 -exec rm -rf {} +`,
+				`cp -a ${ workDir }/restore/wp-content/. ${ remotePath }/wp-content/`
+			);
+			continue;
+		}
+		const restoreSource = quoteRemoteShellArg(
+			path.posix.join( remoteWorkDir, 'restore', 'wp-content', selectedPath )
+		);
+		const destination = quoteRemoteShellArg(
+			path.posix.join( remoteWordPressPath, 'wp-content', selectedPath )
+		);
+		const destinationParent = quoteRemoteShellArg(
+			path.posix.dirname( path.posix.join( remoteWordPressPath, 'wp-content', selectedPath ) )
+		);
+		commands.push(
+			`rm -rf ${ destination }`,
+			`if test -e ${ restoreSource }; then mkdir -p ${ destinationParent } && cp -a ${ restoreSource } ${ destination }; fi`
+		);
+	}
+
+	if ( backup.includeDatabase ) {
+		commands.push(
+			`sql_file=$(find ${ workDir }/restore/sql -type f -name '*.sql' | head -n 1)`,
+			`test -n "$sql_file"`,
+			`${ wpCliPath } db reset --yes --path=${ remotePath }`,
+			`${ wpCliPath } db import "$sql_file" --path=${ remotePath }`,
+			`(${ wpCliPath } cache flush --path=${ remotePath } || true)`
+		);
+	}
+
+	commands.push( `printf '%s\\n' ${ quoteRemoteShellArg( safetyBackupPath ) }` );
+	return { command: commands.join( ' && ' ), safetyBackupPath };
+}
+
+async function rollbackFailedSshOperation(
+	client: Client,
+	connection: SelfHostedSshConnectionWithAuth,
+	backup: SelfHostedSshBackup
+): Promise< { safetyBackupPath: string; verification: SelfHostedSshVerification } > {
+	const remoteWorkDir = getRemoteStudioSyncWorkDir( connection );
+	const { command, safetyBackupPath } = getSshBackupRestoreCommand(
+		connection,
+		backup,
+		remoteWorkDir
+	);
+	try {
+		await runConnectedSshCommand( client, command );
+		return {
+			safetyBackupPath,
+			verification: await verifySelfHostedSshSite( client, connection ),
+		};
+	} finally {
+		await cleanupRemoteWorkDir( client, remoteWorkDir );
+	}
+}
+
+export async function restoreSelfHostedSshBackup(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string,
+	backupId: string
+): Promise< {
+	safetyBackupPath: string;
+	verification: SelfHostedSshVerification;
+} > {
+	const operation = 'restore' as const;
+	sendSelfHostedSshProgress( {
+		localSiteId,
+		connectionId,
+		operation,
+		phase: 'preparing',
+		progress: 5,
+		message: 'Preparing backup restore…',
+	} );
+	try {
+		if ( ! /^studio-(?:backup|pre-restore)-\d+\.tar\.gz$/.test( backupId ) ) {
+			throw new Error( 'Invalid SSH backup identifier.' );
+		}
+		const connections = await getSyncConnectionsForLocalSite( localSiteId );
+		const connection = connections.find( ( item ) => item.id === connectionId );
+		const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+		const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+		if ( parsed.environmentType === 'production' ) {
+			throw new Error( 'SSH backup restore is disabled for production connections.' );
+		}
+		const client = await connectSshClient( parsed );
+		const backupDirectory = getSelfHostedSshBackupDirectory( parsed );
+		const remoteWorkDir = getRemoteStudioSyncWorkDir( parsed );
+
+		try {
+			const sftp = await getSftpClient( client );
+			const backup = await readSelfHostedSshBackupManifest(
+				sftp,
+				backupDirectory,
+				`${ backupId }.json`
+			);
+			sftp.end();
+			sendSelfHostedSshProgress( {
+				localSiteId,
+				connectionId,
+				operation,
+				phase: 'backing-up',
+				progress: 25,
+				message: 'Creating pre-restore safety backup…',
+			} );
+			const { command, safetyBackupPath } = getSshBackupRestoreCommand(
+				parsed,
+				backup,
+				remoteWorkDir
+			);
+			await runConnectedSshCommand( client, command );
+			sendSelfHostedSshProgress( {
+				localSiteId,
+				connectionId,
+				operation,
+				phase: 'verifying',
+				progress: 90,
+				message: 'Verifying restored WordPress site…',
+			} );
+			const verification = await verifySelfHostedSshSite( client, parsed );
+
+			// Auto-rollback: if the manually selected restore left the site in a bad state, restore
+			// the pre-restore safety backup we just captured so a failed restore is never left live.
+			if ( ! verification.ok ) {
+				sendSelfHostedSshProgress( {
+					localSiteId,
+					connectionId,
+					operation,
+					phase: 'applying',
+					progress: 94,
+					message: 'Restore verification failed. Reverting to the pre-restore backup…',
+				} );
+				const rollback = await rollbackFailedSshOperation( client, parsed, {
+					id: path.posix.basename( safetyBackupPath ),
+					createdAt: new Date().toISOString(),
+					archivePath: safetyBackupPath,
+					includeDatabase: backup.includeDatabase,
+					selectedPaths: backup.selectedPaths,
+					sizeInBytes: 0,
+				} );
+				sendSelfHostedSshProgress( {
+					localSiteId,
+					connectionId,
+					operation,
+					phase: 'failed',
+					progress: 100,
+					message: rollback.verification.ok
+						? 'Restore verification failed; reverted to the pre-restore backup.'
+						: 'Restore verification and automatic rollback both failed.',
+				} );
+				throw new Error(
+					rollback.verification.ok
+						? `Backup restore verification failed and Studio reverted to the pre-restore backup at ${ safetyBackupPath }.`
+						: `Backup restore verification and automatic rollback verification both failed. Pre-restore backup: ${ safetyBackupPath }. Rollback safety backup: ${ rollback.safetyBackupPath }.`
+				);
+			}
+
+			sendSelfHostedSshProgress( {
+				localSiteId,
+				connectionId,
+				operation,
+				phase: 'finished',
+				progress: 100,
+				message: 'Backup restore verified.',
+			} );
+			return { safetyBackupPath, verification };
+		} finally {
+			await cleanupRemoteWorkDir( client, remoteWorkDir, {
+				localSiteId,
+				connectionId,
+				operation,
+			} );
+			client.end();
+		}
+	} catch ( error ) {
+		sendSelfHostedSshProgress( {
+			localSiteId,
+			connectionId,
+			operation,
+			phase: 'failed',
+			progress: 100,
+			message: error instanceof Error ? error.message : 'Backup restore failed.',
+		} );
+		throw error;
+	}
+}
+
+function getRestAuthHeader( username: string, applicationPassword: string ): string {
+	return `Basic ${ Buffer.from( `${ username }:${ applicationPassword }` ).toString( 'base64' ) }`;
+}
+
+function getRemoteRestUrl( siteUrl: string, pathName: string ): URL {
+	const baseUrl = new URL( siteUrl );
+	const path = pathName.replace( /^\/+/, '' );
+	return new URL( `/wp-json/${ path }`, baseUrl );
+}
+
+async function remoteRestRequest< T >(
+	connection: SelfHostedRestConnectionWithAuth,
+	pathName: string,
+	options: {
+		method?: string;
+		body?: unknown;
+		headers?: Record< string, string >;
+		rawBody?: BodyInit;
+	} = {}
+): Promise< T > {
+	const headers: Record< string, string > = {
+		Accept: 'application/json',
+		Authorization: getRestAuthHeader(
+			connection.auth.username,
+			connection.auth.applicationPassword
+		),
+		...options.headers,
+	};
+
+	let body = options.rawBody;
+	if ( options.body !== undefined ) {
+		headers[ 'Content-Type' ] = 'application/json';
+		body = JSON.stringify( options.body );
+	}
+
+	const response = await fetch( getRemoteRestUrl( connection.siteUrl, pathName ), {
+		method: options.method ?? 'GET',
+		headers,
+		body,
+	} );
+
+	const text = await response.text();
+	const parsed = text ? JSON.parse( text ) : null;
+
+	if ( ! response.ok ) {
+		const message =
+			typeof parsed?.message === 'string'
+				? parsed.message
+				: `Remote REST request failed with HTTP ${ response.status }.`;
+		throw new Error( message );
+	}
+
+	return parsed as T;
+}
+
+async function localRestRequest< T >( localSiteId: string, pathName: string ): Promise< T > {
+	const response = await fetchSiteRest( {} as IpcMainInvokeEvent, localSiteId, {
+		path: pathName,
+	} );
+
+	if ( response.status < 200 || response.status >= 300 ) {
+		throw new Error( response.body || `Local REST request failed with HTTP ${ response.status }.` );
+	}
+
+	return JSON.parse( response.body ) as T;
+}
+
+function getRawField( field: LocalRenderedField | undefined ): string {
+	return field?.raw ?? field?.rendered ?? '';
+}
+
+async function fetchAllLocal< T >( localSiteId: string, resource: string ): Promise< T[] > {
+	const items: T[] = [];
+	for ( let page = 1; ; page++ ) {
+		const separator = resource.includes( '?' ) ? '&' : '?';
+		const pageItems = await localRestRequest< T[] >(
+			localSiteId,
+			`/wp/v2/${ resource }${ separator }context=edit&per_page=100&page=${ page }`
+		);
+		items.push( ...pageItems );
+		if ( pageItems.length < 100 ) {
+			return items;
+		}
+	}
+}
+
+async function fetchAllLocalContent( localSiteId: string ): Promise< LocalContentItem[] > {
+	const [ posts, pages ] = await Promise.all( [
+		fetchAllLocal< LocalContentItem >( localSiteId, 'posts?status=any' ),
+		fetchAllLocal< LocalContentItem >( localSiteId, 'pages?status=any' ),
+	] );
+	return [
+		...posts.map( ( post ) => ( { ...post, type: 'post' as const } ) ),
+		...pages.map( ( page ) => ( { ...page, type: 'page' as const } ) ),
+	];
+}
+
+function filterSelectedContentItems(
+	contentItems: LocalContentItem[],
+	selectedItems?: Array< { id: number; type: 'post' | 'page' } >
+): LocalContentItem[] {
+	const selectedKeys = new Set(
+		selectedItems?.map( ( item ) => `${ item.type }:${ item.id }` ) ?? []
+	);
+	return selectedKeys.size > 0
+		? contentItems.filter( ( item ) => selectedKeys.has( `${ item.type }:${ item.id }` ) )
+		: contentItems;
+}
+
+export async function listSelfHostedRestContent(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string
+): Promise< LocalContentSelectionItem[] > {
+	const contentItems = await fetchAllLocalContent( localSiteId );
+	return contentItems.map( ( item ) => ( {
+		id: item.id,
+		type: item.type,
+		title: getRawField( item.title ) || item.slug || `#${ item.id }`,
+		slug: item.slug,
+		status: item.status ?? 'unknown',
+		categories: item.categories?.length ?? 0,
+		tags: item.tags?.length ?? 0,
+		hasFeaturedImage: Boolean( item.featured_media ),
+	} ) );
+}
+
+/**
+ * Order content for push so that page parents are written before their children.
+ *
+ * Pages can reference a parent page; the remote parent ID only exists after the parent is pushed.
+ * We emit posts first (order-independent), then pages in parent-first order. Only pages that are
+ * part of the selected set are considered as parents; a child whose parent is not in the selection
+ * is treated as top-level. Cycles fall back to the original order to avoid an infinite loop.
+ */
+function orderContentForPush( items: LocalContentItem[] ): LocalContentItem[] {
+	const posts = items.filter( ( item ) => item.type === 'post' );
+	const pages = items.filter( ( item ) => item.type === 'page' );
+	const pageIds = new Set( pages.map( ( page ) => page.id ) );
+
+	const ordered: LocalContentItem[] = [];
+	const emitted = new Set< number >();
+
+	const visit = ( page: LocalContentItem, stack: Set< number > ): void => {
+		if ( emitted.has( page.id ) || stack.has( page.id ) ) {
+			return;
+		}
+		stack.add( page.id );
+		if ( page.parent && pageIds.has( page.parent ) ) {
+			const parent = pages.find( ( candidate ) => candidate.id === page.parent );
+			if ( parent ) {
+				visit( parent, stack );
+			}
+		}
+		stack.delete( page.id );
+		if ( ! emitted.has( page.id ) ) {
+			emitted.add( page.id );
+			ordered.push( page );
+		}
+	};
+
+	for ( const page of pages ) {
+		visit( page, new Set< number >() );
+	}
+
+	return [ ...posts, ...ordered ];
+}
+
+function mapTermsById( terms: LocalTerm[] ): Map< number, LocalTerm > {
+	return new Map( terms.map( ( term ) => [ term.id, term ] ) );
+}
+
+async function ensureRemoteTerm(
+	connection: SelfHostedRestConnectionWithAuth,
+	taxonomy: 'categories' | 'tags',
+	term: LocalTerm,
+	options: { parentRemoteId?: number } = {}
+): Promise< number > {
+	const body: Record< string, unknown > = {
+		name: term.name,
+		slug: term.slug,
+		description: term.description ?? '',
+	};
+
+	if ( taxonomy === 'categories' && options.parentRemoteId ) {
+		body.parent = options.parentRemoteId;
+	}
+
+	const existing = await remoteRestRequest< RemoteEntity[] >(
+		connection,
+		`/wp/v2/${ taxonomy }?slug=${ encodeURIComponent( term.slug ) }`
+	);
+
+	if ( existing[ 0 ]?.id ) {
+		await remoteRestRequest( connection, `/wp/v2/${ taxonomy }/${ existing[ 0 ].id }`, {
+			method: 'POST',
+			body,
+		} );
+		return existing[ 0 ].id;
+	}
+
+	const created = await remoteRestRequest< RemoteEntity >( connection, `/wp/v2/${ taxonomy }`, {
+		method: 'POST',
+		body,
+	} );
+	return created.id;
+}
+
+async function ensureRemoteCategoryTerm(
+	connection: SelfHostedRestConnectionWithAuth,
+	term: LocalTerm,
+	categoriesById: Map< number, LocalTerm >,
+	remoteCategoryIdsByLocalId: Map< number, number >,
+	visiting = new Set< number >()
+): Promise< number > {
+	const existingRemoteId = remoteCategoryIdsByLocalId.get( term.id );
+	if ( existingRemoteId ) {
+		return existingRemoteId;
+	}
+
+	if ( visiting.has( term.id ) ) {
+		throw new Error( `Circular category parent relationship detected for ${ term.slug }.` );
+	}
+	visiting.add( term.id );
+
+	let parentRemoteId: number | undefined;
+	if ( term.parent ) {
+		const parentTerm = categoriesById.get( term.parent );
+		if ( parentTerm ) {
+			parentRemoteId = await ensureRemoteCategoryTerm(
+				connection,
+				parentTerm,
+				categoriesById,
+				remoteCategoryIdsByLocalId,
+				visiting
+			);
+		}
+	}
+
+	const remoteId = await ensureRemoteTerm( connection, 'categories', term, { parentRemoteId } );
+	remoteCategoryIdsByLocalId.set( term.id, remoteId );
+	visiting.delete( term.id );
+	return remoteId;
+}
+
+async function uploadRemoteMedia(
+	connection: SelfHostedRestConnectionWithAuth,
+	media: LocalMedia
+): Promise< RemoteEntity > {
+	const storedRemoteId = await getStoredRemotePostId(
+		connection.localSiteId,
+		media.id,
+		connection.id
+	);
+	if ( storedRemoteId ) {
+		try {
+			return await remoteRestRequest< RemoteEntity >(
+				connection,
+				`/wp/v2/media/${ storedRemoteId }?context=edit`
+			);
+		} catch {
+			// If the remote attachment was deleted, upload it again and refresh the mapping.
+		}
+	}
+
+	const sourceResponse = await fetch( media.source_url );
+	if ( ! sourceResponse.ok ) {
+		throw new Error( `Failed to read local media ${ media.source_url }.` );
+	}
+
+	const filename = decodeURIComponent(
+		new URL( media.source_url ).pathname.split( '/' ).filter( Boolean ).pop() ??
+			`media-${ media.id }`
+	);
+
+	const uploaded = await remoteRestRequest< RemoteEntity >( connection, '/wp/v2/media', {
+		method: 'POST',
+		rawBody: await sourceResponse.arrayBuffer(),
+		headers: {
+			'Content-Type': media.mime_type || 'application/octet-stream',
+			'Content-Disposition': `attachment; filename="${ filename.replace( /"/g, '' ) }"`,
+		},
+	} );
+
+	const metadataBody: Record< string, unknown > = {
+		title: getRawField( media.title ) || filename,
+		alt_text: media.alt_text ?? '',
+		caption: getRawField( media.caption ),
+		description: getRawField( media.description ),
+		// Mirror alt text into the canonical attachment meta key so themes and the media library
+		// that read `_wp_attachment_image_alt` directly stay in sync with the REST `alt_text`.
+		meta: { _wp_attachment_image_alt: media.alt_text ?? '' },
+	};
+	if ( media.date ) {
+		metadataBody.date = media.date;
+	}
+	if ( media.date_gmt ) {
+		metadataBody.date_gmt = media.date_gmt;
+	}
+
+	const updated = await remoteRestRequest< RemoteEntity >(
+		connection,
+		`/wp/v2/media/${ uploaded.id }`,
+		{
+			method: 'POST',
+			body: metadataBody,
+		}
+	);
+
+	await storeRemotePostId( connection.localSiteId, media.id, connection.id, uploaded.id );
+
+	return {
+		...uploaded,
+		...updated,
+	};
+}
+
+async function getStoredRemotePostId(
+	localSiteId: string,
+	localPostId: number,
+	connectionId: string
+): Promise< number | null > {
+	const site = SiteServer.get( localSiteId );
+	if ( ! site ) {
+		throw new Error( 'Site not found.' );
+	}
+
+	const result = await site.executeWpCliCommand( [
+		'post',
+		'meta',
+		'get',
+		String( localPostId ),
+		`_studio_remote_post_id_${ connectionId }`,
+	] );
+
+	const value = Number.parseInt( result.stdout.trim(), 10 );
+	return Number.isFinite( value ) ? value : null;
+}
+
+async function storeRemotePostId(
+	localSiteId: string,
+	localPostId: number,
+	connectionId: string,
+	remotePostId: number
+): Promise< void > {
+	const site = SiteServer.get( localSiteId );
+	if ( ! site ) {
+		throw new Error( 'Site not found.' );
+	}
+
+	await site.executeWpCliCommand( [
+		'post',
+		'meta',
+		'update',
+		String( localPostId ),
+		`_studio_remote_post_id_${ connectionId }`,
+		String( remotePostId ),
+	] );
+}
+
+async function findRemoteContentMatch(
+	connection: SelfHostedRestConnectionWithAuth,
+	item: LocalContentItem
+): Promise< { remoteId: number | null; source: 'stored' | 'slug' | null } > {
+	const storedRemoteId = await getStoredRemotePostId(
+		connection.localSiteId,
+		item.id,
+		connection.id
+	);
+	if ( storedRemoteId ) {
+		return { remoteId: storedRemoteId, source: 'stored' };
+	}
+
+	const resource = item.type === 'page' ? 'pages' : 'posts';
+	const existing = await remoteRestRequest< RemoteEntity[] >(
+		connection,
+		`/wp/v2/${ resource }?slug=${ encodeURIComponent( item.slug ) }&status=any&context=edit`
+	);
+	return existing[ 0 ]?.id
+		? { remoteId: existing[ 0 ].id, source: 'slug' }
+		: { remoteId: null, source: null };
+}
+
+async function findRemoteContentItem(
+	connection: SelfHostedRestConnectionWithAuth,
+	item: LocalContentItem
+): Promise< number | null > {
+	const match = await findRemoteContentMatch( connection, item );
+	if ( match.source === 'slug' ) {
+		throw new Error(
+			`Remote ${ item.type } with slug "${ item.slug }" already exists but is not mapped to this local item.`
+		);
+	}
+	return match.remoteId;
+}
+
+export async function previewSelfHostedRestContentPush(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string,
+	options: { selectedItems?: Array< { id: number; type: 'post' | 'page' } > } = {}
+): Promise< ContentPushPreview > {
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedRestConnectionWithAuthSchema.parse( hydratedConnection );
+	const allContentItems = await fetchAllLocalContent( localSiteId );
+	const contentItems = filterSelectedContentItems( allContentItems, options.selectedItems );
+	const items: ContentPushPreviewItem[] = [];
+
+	for ( const item of contentItems ) {
+		const match = await findRemoteContentMatch( parsed, item );
+		const base = {
+			id: item.id,
+			type: item.type,
+			title: getRawField( item.title ) || item.slug || `#${ item.id }`,
+			slug: item.slug,
+			remoteId: match.remoteId,
+		};
+
+		if ( match.source === 'stored' ) {
+			items.push( { ...base, action: 'update' } );
+		} else if ( match.source === 'slug' ) {
+			items.push( {
+				...base,
+				action: 'conflict',
+				reason: 'A remote item already uses this slug, but Studio has not mapped it yet.',
+			} );
+		} else {
+			items.push( { ...base, action: 'create' } );
+		}
+	}
+
+	return {
+		items,
+		summary: {
+			create: items.filter( ( item ) => item.action === 'create' ).length,
+			update: items.filter( ( item ) => item.action === 'update' ).length,
+			conflict: items.filter( ( item ) => item.action === 'conflict' ).length,
+		},
+	};
+}
+
+export async function pushSelfHostedRestContent(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string,
+	options: {
+		publish?: boolean;
+		selectedItems?: Array< { id: number; type: 'post' | 'page' } >;
+		// Editorial approval token required to publish or schedule to a production connection. Must
+		// equal 'PUBLISH'. Enforced here in the main process so the gate cannot be bypassed by calling
+		// the IPC directly; the renderer collects it via typed confirmation.
+		approval?: string;
+		// ISO 8601 timestamp (in the future) to schedule publication instead of publishing
+		// immediately. When set, pushed content is created with WordPress `status: future`.
+		scheduledDate?: string;
+	} = {}
+): Promise< { posts: number; pages: number; media: number; categories: number; tags: number } > {
+	const startedAt = new Date().toISOString();
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedRestConnectionWithAuthSchema.parse( hydratedConnection );
+
+	// Validate any scheduled date up front.
+	let scheduledDate: Date | null = null;
+	if ( options.scheduledDate ) {
+		scheduledDate = new Date( options.scheduledDate );
+		if ( Number.isNaN( scheduledDate.getTime() ) ) {
+			throw new Error( 'Invalid scheduled publish date.' );
+		}
+		if ( scheduledDate.getTime() <= Date.now() ) {
+			throw new Error( 'Scheduled publish date must be in the future.' );
+		}
+	}
+
+	// A scheduled publish counts as a publish for the production approval gate.
+	const isPublishingOrScheduling = Boolean( options.publish ) || scheduledDate !== null;
+
+	// Editorial approval gate: publishing or scheduling to production requires explicit approval.
+	// Draft pushes (the default) and non-production targets do not.
+	if (
+		parsed.environmentType === 'production' &&
+		isPublishingOrScheduling &&
+		options.approval !== 'PUBLISH'
+	) {
+		throw new Error(
+			'Publishing or scheduling to production requires editorial approval. Confirm by typing PUBLISH.'
+		);
+	}
+
+	const [ allContentItems, categories, tags, mediaItems ] = await Promise.all( [
+		fetchAllLocalContent( localSiteId ),
+		fetchAllLocal< LocalTerm >( localSiteId, 'categories' ),
+		fetchAllLocal< LocalTerm >( localSiteId, 'tags' ),
+		fetchAllLocal< LocalMedia >( localSiteId, 'media' ),
+	] );
+
+	const contentItems = filterSelectedContentItems( allContentItems, options.selectedItems );
+
+	const categoriesById = mapTermsById( categories );
+	const tagsById = mapTermsById( tags );
+	const remoteCategoryIdsByLocalId = new Map< number, number >();
+	const remoteTagIdsByLocalId = new Map< number, number >();
+
+	for ( const item of contentItems.filter( ( contentItem ) => contentItem.type === 'post' ) ) {
+		for ( const localCategoryId of item.categories ?? [] ) {
+			const category = categoriesById.get( localCategoryId );
+			if ( category && ! remoteCategoryIdsByLocalId.has( localCategoryId ) ) {
+				await ensureRemoteCategoryTerm(
+					parsed,
+					category,
+					categoriesById,
+					remoteCategoryIdsByLocalId
+				);
+			}
+		}
+
+		for ( const localTagId of item.tags ?? [] ) {
+			const tag = tagsById.get( localTagId );
+			if ( tag && ! remoteTagIdsByLocalId.has( localTagId ) ) {
+				remoteTagIdsByLocalId.set( localTagId, await ensureRemoteTerm( parsed, 'tags', tag ) );
+			}
+		}
+	}
+
+	const usedMediaIds = getUsedMediaIdsFromContent(
+		contentItems.flatMap( ( item ) => [
+			getRawField( item.content ),
+			getRawField( item.excerpt ),
+		] ),
+		mediaItems,
+		contentItems.map( ( item ) => item.featured_media ?? 0 )
+	);
+	const mediaById = new Map( mediaItems.map( ( media ) => [ media.id, media ] ) );
+	const remoteMediaByLocalId = new Map< number, RemoteEntity >();
+	const mediaUrlReplacementMaps: Array< Map< string, string > > = [];
+
+	for ( const localMediaId of usedMediaIds ) {
+		const media = mediaById.get( localMediaId );
+		if ( media ) {
+			const uploaded = await uploadRemoteMedia( parsed, media );
+			remoteMediaByLocalId.set( localMediaId, uploaded );
+			mediaUrlReplacementMaps.push( buildMediaUrlReplacementMap( media, uploaded ) );
+		}
+	}
+	const uploadedMediaByLocalUrl = mergeMediaUrlReplacementMaps( mediaUrlReplacementMaps );
+	const remoteMediaIdByLocalId = new Map(
+		[ ...remoteMediaByLocalId.entries() ].map( ( [ localId, remote ] ) => [ localId, remote.id ] )
+	);
+
+	const rewriteContent = ( value: string ): string =>
+		rewriteMediaIdReferences(
+			replaceMediaUrls( value, uploadedMediaByLocalUrl ),
+			remoteMediaIdByLocalId
+		);
+
+	const summary = { posts: 0, pages: 0, media: remoteMediaByLocalId.size, categories: 0, tags: 0 };
+	summary.categories = remoteCategoryIdsByLocalId.size;
+	summary.tags = remoteTagIdsByLocalId.size;
+
+	// Push pages parent-first so a child page can reference its parent's freshly-created remote ID.
+	const orderedContentItems = orderContentForPush( contentItems );
+	const remoteContentIdByLocalId = new Map< number, number >();
+
+	for ( const item of orderedContentItems ) {
+		const resource = item.type === 'page' ? 'pages' : 'posts';
+		const remoteId = await findRemoteContentItem( parsed, item );
+		const status = scheduledDate ? 'future' : options.publish ? 'publish' : 'draft';
+		const body: Record< string, unknown > = {
+			title: getRawField( item.title ),
+			content: rewriteContent( getRawField( item.content ) ),
+			excerpt: rewriteContent( getRawField( item.excerpt ) ),
+			slug: item.slug,
+			status,
+			comment_status: item.comment_status,
+			ping_status: item.ping_status,
+		};
+
+		if ( scheduledDate ) {
+			// Schedule: WordPress publishes automatically at this future date.
+			body.date_gmt = scheduledDate.toISOString().replace( /\.\d{3}Z$/, '' );
+		} else if ( options.publish && item.date ) {
+			// Immediate publish: carry the original publish date forward. Drafts are not forced to a
+			// date.
+			body.date = item.date;
+			if ( item.date_gmt ) {
+				body.date_gmt = item.date_gmt;
+			}
+		}
+
+		if ( item.featured_media ) {
+			body.featured_media = remoteMediaByLocalId.get( item.featured_media )?.id ?? 0;
+		}
+
+		if ( item.type === 'page' ) {
+			body.menu_order = item.menu_order ?? 0;
+			const remoteParentId = item.parent ? remoteContentIdByLocalId.get( item.parent ) : undefined;
+			body.parent = remoteParentId ?? 0;
+		}
+
+		if ( item.type === 'post' ) {
+			body.sticky = Boolean( item.sticky );
+			body.categories = ( item.categories ?? [] )
+				.map( ( localCategoryId ) => remoteCategoryIdsByLocalId.get( localCategoryId ) )
+				.filter( ( id ): id is number => typeof id === 'number' );
+			body.tags = ( item.tags ?? [] )
+				.map( ( localTagId ) => remoteTagIdsByLocalId.get( localTagId ) )
+				.filter( ( id ): id is number => typeof id === 'number' );
+		}
+
+		const saved = await remoteRestRequest< RemoteEntity >(
+			parsed,
+			remoteId ? `/wp/v2/${ resource }/${ remoteId }` : `/wp/v2/${ resource }`,
+			{
+				method: 'POST',
+				body,
+			}
+		);
+		await storeRemotePostId( localSiteId, item.id, connectionId, saved.id );
+		remoteContentIdByLocalId.set( item.id, saved.id );
+
+		if ( item.type === 'page' ) {
+			summary.pages++;
+		} else {
+			summary.posts++;
+		}
+	}
+
+	await logSyncDeployment( {
+		localSiteId,
+		connectionId,
+		provider: parsed.provider,
+		operation: 'rest-content-push',
+		environmentType: parsed.environmentType,
+		startedAt,
+		status: 'success',
+		detail: `Pushed content to ${ parsed.siteUrl } as ${
+			scheduledDate
+				? `scheduled for ${ scheduledDate.toISOString() }`
+				: options.publish
+				? 'published'
+				: 'drafts'
+		}.${
+			parsed.environmentType === 'production' && isPublishingOrScheduling
+				? ' Production change was editorially approved.'
+				: ''
+		}`,
+		summary: {
+			...summary,
+			publish: Boolean( options.publish ),
+			scheduledDate: scheduledDate ? scheduledDate.toISOString() : undefined,
+			productionApproved:
+				parsed.environmentType === 'production' && isPublishingOrScheduling ? true : undefined,
+		},
+	} );
+
+	return summary;
+}
+
+export async function pullSelfHostedSshSite(
+	event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string,
+	options: SelfHostedSshPullOptions
+): Promise< { archivePath: string; remoteArchivePath: string } > {
+	const operation = 'pull' as const;
+	sendSelfHostedSshProgress( {
+		localSiteId,
+		connectionId,
+		operation,
+		phase: 'preparing',
+		progress: 5,
+		message: 'Preparing remote archive…',
+	} );
+	try {
+		const connections = await getSyncConnectionsForLocalSite( localSiteId );
+		const connection = connections.find( ( item ) => item.id === connectionId );
+		const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+		const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+		const parsedOptions = selfHostedSshPullOptionsSchema.parse( options );
+		const isFullPull = parsedOptions.optionsToSync.includes( 'all' );
+		const includesDatabase = parsedOptions.optionsToSync.includes( 'sqls' );
+		const includesPaths = parsedOptions.optionsToSync.includes( 'paths' );
+		const hasSelectedPaths = Boolean( parsedOptions.specificSelectionPaths?.length );
+		if (
+			parsedOptions.optionsToSync.length === 0 ||
+			( isFullPull && parsedOptions.optionsToSync.length !== 1 ) ||
+			( ! isFullPull && ! includesDatabase && ! ( includesPaths && hasSelectedPaths ) ) ||
+			( hasSelectedPaths && ! includesPaths )
+		) {
+			throw new Error( 'Select at least one database or wp-content item to pull.' );
+		}
+		const { archivePath, remoteArchivePath } = await createSelfHostedSshPullArchive(
+			parsed,
+			localSiteId,
+			parsedOptions,
+			( transferProgress ) =>
+				sendSelfHostedSshProgress( {
+					localSiteId,
+					connectionId,
+					operation,
+					phase: 'downloading',
+					progress: 30 + transferProgress * 0.35,
+					message: `Downloading remote archive (${ Math.round( transferProgress ) }%)…`,
+				} )
+		);
+
+		sendSelfHostedSshProgress( {
+			localSiteId,
+			connectionId,
+			operation,
+			phase: 'importing',
+			progress: 70,
+			message: 'Importing selected data…',
+		} );
+		await importSite( event, localSiteId, archivePath, {
+			alwaysStartServer: true,
+			removeBackupOnComplete: true,
+			showErrorModal: true,
+			showNotification: true,
+		} );
+		await addOrUpdateSyncConnection( localSiteId, {
+			...stripSyncConnectionAuth( parsed ),
+			lastPullTimestamp: new Date().toISOString(),
+		} );
+		sendSelfHostedSshProgress( {
+			localSiteId,
+			connectionId,
+			operation,
+			phase: 'finished',
+			progress: 100,
+			message: 'Pull completed.',
+		} );
+
+		return { archivePath, remoteArchivePath };
+	} catch ( error ) {
+		sendSelfHostedSshProgress( {
+			localSiteId,
+			connectionId,
+			operation,
+			phase: 'failed',
+			progress: 100,
+			message: error instanceof Error ? error.message : 'Pull failed.',
+		} );
+		throw error;
+	}
+}
+
+export async function pushSelfHostedSshSite(
+	event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string,
+	options: SelfHostedSshPushOptions
+): Promise< { backupPath: string; verification: SelfHostedSshVerification } > {
+	const operation = 'push' as const;
+	const startedAt = new Date().toISOString();
+	sendSelfHostedSshProgress( {
+		localSiteId,
+		connectionId,
+		operation,
+		phase: 'exporting',
+		progress: 5,
+		message: 'Exporting local selection…',
+	} );
+	try {
+		const connections = await getSyncConnectionsForLocalSite( localSiteId );
+		const connection = connections.find( ( item ) => item.id === connectionId );
+		const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+		const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+		const parsedOptions = selfHostedSshPushOptionsSchema.parse( options );
+
+		if ( parsed.environmentType === 'production' ) {
+			throw new Error(
+				'SSH push to production is disabled. Use a staging or development connection.'
+			);
+		}
+
+		getSelfHostedSshPushSelection( parsedOptions );
+		const { archivePath, localSiteUrl } = await createSelfHostedSshPushArchive(
+			event,
+			localSiteId,
+			parsedOptions
+		);
+		const remoteWorkDir = getRemoteStudioSyncWorkDir( parsed );
+		const { command, remoteArchivePath } = getSshPushRestoreCommand(
+			parsed,
+			remoteWorkDir,
+			parsedOptions,
+			localSiteUrl
+		);
+		let client: Client | undefined;
+
+		try {
+			// Authoritative disk-space guard: refuse the push before uploading anything if the remote
+			// filesystem cannot hold the archive plus its scoped backup plus a working margin. This
+			// enforces the preflight in the main process so the block holds even if the UI is bypassed.
+			const archiveStats = await fsPromises.stat( archivePath );
+			const diskEstimate = await getSelfHostedSshPushDiskEstimate( parsed, parsedOptions );
+			const requiredDiskSpaceInBytes =
+				archiveStats.size + diskEstimate.estimatedBackupSizeInBytes + 100 * 1024 * 1024;
+			if ( diskEstimate.availableDiskSpaceInBytes < requiredDiskSpaceInBytes ) {
+				throw new Error(
+					`Not enough remote disk space for this push. Required ${ requiredDiskSpaceInBytes } bytes, available ${ diskEstimate.availableDiskSpaceInBytes } bytes.`
+				);
+			}
+
+			client = await connectSshClient( parsed );
+			sendSelfHostedSshProgress( {
+				localSiteId,
+				connectionId,
+				operation,
+				phase: 'uploading',
+				progress: 20,
+				message: 'Uploading archive…',
+			} );
+			await runConnectedSshCommand( client, `mkdir -p ${ quoteRemoteShellArg( remoteWorkDir ) }` );
+			const sftp = await getSftpClient( client );
+			await uploadSftpFile( sftp, archivePath, remoteArchivePath, ( transferProgress ) =>
+				sendSelfHostedSshProgress( {
+					localSiteId,
+					connectionId,
+					operation,
+					phase: 'uploading',
+					progress: 20 + transferProgress * 0.35,
+					message: `Uploading archive (${ Math.round( transferProgress ) }%)…`,
+				} )
+			);
+			sftp.end();
+			sendSelfHostedSshProgress( {
+				localSiteId,
+				connectionId,
+				operation,
+				phase: 'backing-up',
+				progress: 60,
+				message: 'Backing up and applying remote changes…',
+			} );
+			const backupPath = ( await runConnectedSshCommand( client, command ) ).trim();
+			if ( ! backupPath ) {
+				throw new Error( 'Remote backup path was not returned.' );
+			}
+			sendSelfHostedSshProgress( {
+				localSiteId,
+				connectionId,
+				operation,
+				phase: 'verifying',
+				progress: 90,
+				message: 'Verifying remote WordPress site…',
+			} );
+			const verification = await verifySelfHostedSshSite( client, parsed );
+			if ( ! verification.ok ) {
+				const { includeDatabase, selectedPaths } = getSelfHostedSshPushSelection( parsedOptions );
+				sendSelfHostedSshProgress( {
+					localSiteId,
+					connectionId,
+					operation,
+					phase: 'applying',
+					progress: 94,
+					message: 'Verification failed. Restoring the pre-push backup…',
+				} );
+				const rollback = await rollbackFailedSshOperation( client, parsed, {
+					id: path.posix.basename( backupPath ),
+					createdAt: new Date().toISOString(),
+					archivePath: backupPath,
+					includeDatabase,
+					selectedPaths,
+					sizeInBytes: 0,
+				} );
+				throw new Error(
+					rollback.verification.ok
+						? `Push verification failed and Studio automatically restored the pre-push backup. Failed-state backup: ${ rollback.safetyBackupPath }.`
+						: `Push verification and automatic rollback verification both failed. Original backup: ${ backupPath }. Failed-state backup: ${ rollback.safetyBackupPath }.`
+				);
+			}
+			await addOrUpdateSyncConnection( localSiteId, {
+				...stripSyncConnectionAuth( parsed ),
+				lastPushTimestamp: new Date().toISOString(),
+			} );
+			sendSelfHostedSshProgress( {
+				localSiteId,
+				connectionId,
+				operation,
+				phase: 'finished',
+				progress: 100,
+				message: 'Push verified.',
+			} );
+			const { includeDatabase, selectedPaths } = getSelfHostedSshPushSelection( parsedOptions );
+			await logSyncDeployment( {
+				localSiteId,
+				connectionId,
+				provider: parsed.provider,
+				operation: 'push',
+				environmentType: parsed.environmentType,
+				startedAt,
+				status: verification.ok ? 'success' : 'verified-with-warnings',
+				detail: `Pushed to ${ parsed.siteUrl }. Backup at ${ backupPath }.`,
+				summary: { includeDatabase, selectedPaths, backupPath },
+			} );
+			return { backupPath, verification };
+		} finally {
+			if ( client ) {
+				await cleanupRemoteWorkDir( client, remoteWorkDir, {
+					localSiteId,
+					connectionId,
+					operation,
+				} );
+				client.end();
+			}
+			await fsPromises.rm( path.dirname( archivePath ), { recursive: true, force: true } );
+		}
+	} catch ( error ) {
+		sendSelfHostedSshProgress( {
+			localSiteId,
+			connectionId,
+			operation,
+			phase: 'failed',
+			progress: 100,
+			message: error instanceof Error ? error.message : 'Push failed.',
+		} );
+		await logSyncDeployment( {
+			localSiteId,
+			connectionId,
+			provider: 'self-hosted-ssh',
+			operation: 'push',
+			environmentType: 'staging',
+			startedAt,
+			status: 'failed',
+			detail: error instanceof Error ? error.message : 'Push failed.',
+		} );
+		throw error;
+	}
+}
+
+/**
+ * Estimate the size of a remote pull before downloading anything, mirroring the push preflight.
+ * Reports the WP-CLI database size and the disk usage of the selected `wp-content` paths so the UI
+ * can warn before a large transfer. Paths are validated/normalized to stay inside `wp-content`.
+ */
+export async function previewSelfHostedSshPull(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string,
+	options: SelfHostedSshPullOptions
+): Promise< SelfHostedSshPullEstimate > {
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+	const parsedOptions = selfHostedSshPullOptionsSchema.parse( options );
+
+	const isFullPull = parsedOptions.optionsToSync.includes( 'all' );
+	const includeDatabase = isFullPull || parsedOptions.optionsToSync.includes( 'sqls' );
+	const selectedPaths = isFullPull
+		? [ '' ]
+		: ( parsedOptions.specificSelectionPaths ?? [] ).map( normalizeSelfHostedWpContentPath );
+
+	const remoteWordPressPath = parsed.auth.remoteWordPressPath.replace( /\/+$/, '' );
+	const remotePath = quoteRemoteShellArg( remoteWordPressPath );
+	const wpCliPath = quoteRemoteShellArg( parsed.auth.wpCliPath?.trim() || 'wp' );
+	const commands = [ 'set -e', 'db_size=0', 'content_size=0' ];
+
+	if ( includeDatabase ) {
+		commands.push(
+			`db_size=$(${ wpCliPath } db size --size_format=b --path=${ remotePath } 2>/dev/null | tail -n 1 || printf '0')`,
+			`case "$db_size" in ''|*[!0-9]*) db_size=0 ;; esac`
+		);
+	}
+
+	for ( const selectedPath of selectedPaths ) {
+		const targetPath =
+			selectedPath === ''
+				? path.posix.join( remoteWordPressPath, 'wp-content' )
+				: path.posix.join( remoteWordPressPath, 'wp-content', selectedPath );
+		commands.push(
+			`if test -e ${ quoteRemoteShellArg(
+				targetPath
+			) }; then path_size=$(du -sk ${ quoteRemoteShellArg(
+				targetPath
+			) } | awk '{print $1 * 1024}'); content_size=$((content_size + path_size)); fi`
+		);
+	}
+
+	commands.push( `printf '%s\\n%s\\n' "$db_size" "$content_size"` );
+
+	const client = await connectSshClient( parsed );
+	try {
+		const output = await runConnectedSshCommand( client, commands.join( ' && ' ) );
+		const [ databaseSize, contentSize ] = output
+			.trim()
+			.split( /\s+/ )
+			.map( ( value ) => Number.parseInt( value, 10 ) );
+		const databaseSizeInBytes = Number.isFinite( databaseSize ) ? databaseSize : 0;
+		const wpContentSizeInBytes = Number.isFinite( contentSize ) ? contentSize : 0;
+		return {
+			includeDatabase,
+			databaseSizeInBytes,
+			wpContentSizeInBytes,
+			estimatedSourceSizeInBytes: databaseSizeInBytes + wpContentSizeInBytes,
+			selectedPaths,
+		};
+	} finally {
+		client.end();
+	}
+}
+
+export async function previewSelfHostedSshPush(
+	event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string,
+	options: SelfHostedSshPushOptions
+): Promise< SelfHostedSshPushPreflight > {
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+	const parsedOptions = selfHostedSshPushOptionsSchema.parse( options );
+
+	if ( parsed.environmentType === 'production' ) {
+		throw new Error(
+			'SSH push to production is disabled. Use a staging or development connection.'
+		);
+	}
+
+	const { includeDatabase, selectedPaths } = getSelfHostedSshPushSelection( parsedOptions );
+	const { archivePath } = await createSelfHostedSshPushArchive( event, localSiteId, parsedOptions );
+	try {
+		const [ archiveStats, diskEstimate ] = await Promise.all( [
+			fsPromises.stat( archivePath ),
+			getSelfHostedSshPushDiskEstimate( parsed, parsedOptions ),
+		] );
+		const requiredDiskSpaceInBytes =
+			archiveStats.size + diskEstimate.estimatedBackupSizeInBytes + 100 * 1024 * 1024;
+		return {
+			archiveSizeInBytes: archiveStats.size,
+			estimatedBackupSizeInBytes: diskEstimate.estimatedBackupSizeInBytes,
+			availableDiskSpaceInBytes: diskEstimate.availableDiskSpaceInBytes,
+			requiredDiskSpaceInBytes,
+			hasEnoughDiskSpace: diskEstimate.availableDiskSpaceInBytes >= requiredDiskSpaceInBytes,
+			includeDatabase,
+			selectedPaths,
+		};
+	} finally {
+		await fsPromises.rm( path.dirname( archivePath ), { recursive: true, force: true } );
+	}
+}
+
+export async function deleteSelfHostedSshBackup(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string,
+	backupId: string
+): Promise< void > {
+	if ( ! /^studio-(?:backup|pre-restore)-\d+\.tar\.gz$/.test( backupId ) ) {
+		throw new Error( 'Invalid SSH backup identifier.' );
+	}
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+	const backupDirectory = getSelfHostedSshBackupDirectory( parsed );
+	const archivePath = path.posix.join( backupDirectory, backupId );
+	const manifestPath = `${ archivePath }.json`;
+	const client = await connectSshClient( parsed );
+	try {
+		await runConnectedSshCommand(
+			client,
+			`rm -f ${ quoteRemoteShellArg( archivePath ) } ${ quoteRemoteShellArg( manifestPath ) }`
+		);
+	} finally {
+		client.end();
+	}
+}
+
+/**
+ * Apply an automatic backup-retention policy, pruning SSH push backups by age, count, and total
+ * size. The newest backup is always retained. Returns the IDs that were removed so callers (and
+ * tests) can report what was cleaned up. Only `studio-backup-*` archives are eligible — pre-restore
+ * safety backups are left alone.
+ */
+export async function applySelfHostedSshBackupRetention(
+	_event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string,
+	policy: SelfHostedSshBackupRetentionPolicy,
+	now: number = Date.now()
+): Promise< { prunedBackupIds: string[] } > {
+	const parsedPolicy = selfHostedSshBackupRetentionPolicySchema.parse( policy );
+	if (
+		parsedPolicy.maxCount === undefined &&
+		parsedPolicy.maxAgeInDays === undefined &&
+		parsedPolicy.maxTotalSizeInBytes === undefined
+	) {
+		return { prunedBackupIds: [] };
+	}
+
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedSshConnectionWithAuthSchema.parse( hydratedConnection );
+
+	const allBackups = await listSelfHostedSshBackups( _event, localSiteId, connectionId );
+	// Pre-restore safety backups are excluded from automatic retention.
+	const pushBackups = allBackups.filter( ( backup ) => backup.id.startsWith( 'studio-backup-' ) );
+	const toPrune = selectBackupsToPrune( pushBackups, parsedPolicy, now );
+	if ( toPrune.length === 0 ) {
+		return { prunedBackupIds: [] };
+	}
+
+	const backupDirectory = getSelfHostedSshBackupDirectory( parsed );
+	const removeArgs = toPrune
+		.flatMap( ( backup ) => {
+			const archivePath = path.posix.join( backupDirectory, backup.id );
+			return [ archivePath, `${ archivePath }.json` ];
+		} )
+		.map( ( target ) => quoteRemoteShellArg( target ) )
+		.join( ' ' );
+
+	const client = await connectSshClient( parsed );
+	try {
+		await runConnectedSshCommand( client, `rm -f ${ removeArgs }` );
+	} finally {
+		client.end();
+	}
+
+	return { prunedBackupIds: toPrune.map( ( backup ) => backup.id ) };
+}
+
+export async function pullSelfHostedConnectorSite(
+	event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string
+): Promise< void > {
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedConnectorConnectionWithAuthSchema.parse( hydratedConnection );
+	const exportResult = await connectorRequest< { download_url: string } >( parsed, 'exports', {
+		method: 'POST',
+		body: { database: true, wp_content: true },
+	} );
+	const response = await fetch( exportResult.download_url, {
+		headers: { Authorization: `Bearer ${ parsed.auth.token }` },
+		signal: AbortSignal.timeout( 120_000 ),
+	} );
+	if ( ! response.ok ) {
+		throw new Error( `Connector archive download failed with HTTP ${ response.status }.` );
+	}
+	const tempDirectory = path.join(
+		app.getPath( 'temp' ),
+		'com.wordpress.studio',
+		'connector-pulls'
+	);
+	await fsPromises.mkdir( tempDirectory, { recursive: true } );
+	const archivePath = path.join( tempDirectory, `connector-${ randomUUID() }.tar.gz` );
+	await fsPromises.writeFile( archivePath, Buffer.from( await response.arrayBuffer() ) );
+	await importSite( event, localSiteId, archivePath, {
+		alwaysStartServer: true,
+		removeBackupOnComplete: true,
+		showErrorModal: true,
+		showNotification: true,
+	} );
+	await addOrUpdateSyncConnection( localSiteId, {
+		...stripSyncConnectionAuth( parsed ),
+		lastPullTimestamp: new Date().toISOString(),
+	} );
+}
+
+export async function pushSelfHostedConnectorSite(
+	event: IpcMainInvokeEvent,
+	localSiteId: string,
+	connectionId: string
+): Promise< { backupId?: string } > {
+	const connections = await getSyncConnectionsForLocalSite( localSiteId );
+	const connection = connections.find( ( item ) => item.id === connectionId );
+	const hydratedConnection = await hydrateSyncConnectionCredentials( localSiteId, connection );
+	const parsed = selfHostedConnectorConnectionWithAuthSchema.parse( hydratedConnection );
+	if ( parsed.environmentType === 'production' ) {
+		throw new Error( 'Connector full-site push is disabled for production connections.' );
+	}
+	const site = SiteServer.get( localSiteId );
+	if ( ! site ) {
+		throw new Error( 'Site not found.' );
+	}
+	const tempDirectory = path.join(
+		app.getPath( 'temp' ),
+		'com.wordpress.studio',
+		'connector-pushes',
+		randomUUID()
+	);
+	await fsPromises.mkdir( tempDirectory, { recursive: true } );
+	const archivePath = path.join( tempDirectory, `connector-${ localSiteId }.tar.gz` );
+	try {
+		await exportSite( event, localSiteId, archivePath, {
+			mode: 'full',
+			showErrorModal: true,
+			showNotification: false,
+			splitDatabaseDumpByTable: false,
+			applyDeployIgnore: true,
+		} );
+		const upload = await connectorRequest< { archive_id: string } >( parsed, 'archives', {
+			method: 'POST',
+			rawBody: new Uint8Array( await fsPromises.readFile( archivePath ) ),
+			headers: { 'Content-Type': 'application/gzip' },
+		} );
+		const restore = await connectorRequest< { backup_id?: string } >(
+			parsed,
+			`archives/${ encodeURIComponent( upload.archive_id ) }/restore`,
+			{
+				method: 'POST',
+				body: {
+					database: true,
+					wp_content: true,
+					create_backup: true,
+					source_url: getSiteUrl( site.details ),
+					target_url: parsed.siteUrl,
+				},
+			}
+		);
+		await addOrUpdateSyncConnection( localSiteId, {
+			...stripSyncConnectionAuth( parsed ),
+			lastPushTimestamp: new Date().toISOString(),
+		} );
+		return { backupId: restore.backup_id };
+	} finally {
+		await fsPromises.rm( tempDirectory, { recursive: true, force: true } );
+	}
 }

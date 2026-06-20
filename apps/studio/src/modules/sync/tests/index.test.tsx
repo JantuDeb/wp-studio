@@ -140,6 +140,7 @@ describe( 'ContentTabSync', () => {
 			addSyncOperation: vi.fn(),
 			clearSyncOperation: vi.fn(),
 			getConnectedWpcomSites: vi.fn().mockResolvedValue( [] ),
+			getSyncConnections: vi.fn().mockResolvedValue( [] ),
 			getDirectorySize: vi.fn().mockResolvedValue( 0 ),
 			connectWpcomSites: vi.fn(),
 			getWpVersion: vi.fn().mockResolvedValue( '6.4.3' ),
@@ -243,11 +244,11 @@ describe( 'ContentTabSync', () => {
 		);
 	};
 
-	it( 'renders the sync title and login buttons', () => {
+	it( 'renders the sync title and login buttons', async () => {
 		const authMock = createAuthMock( false );
 		vi.mocked( useAuth, { partial: true } ).mockReturnValue( authMock );
 		renderWithProvider( <ContentTabSync selectedSite={ selectedSite } /> );
-		expect( screen.getByText( 'Sync with WordPress.com or Pressable' ) ).toBeInTheDocument();
+		expect( await screen.findByText( 'Sync with WordPress.com or Pressable' ) ).toBeInTheDocument();
 
 		const loginButton = screen.getByRole( 'button', { name: /Log in to WordPress.com/i } );
 		expect( loginButton ).toBeInTheDocument();
@@ -309,6 +310,11 @@ describe( 'ContentTabSync', () => {
 		const connectSiteButton = await screen.findByRole( 'button', { name: 'Connect site' } );
 		expect( connectSiteButton ).toBeInTheDocument();
 		fireEvent.click( connectSiteButton );
+
+		const wpcomOption = await screen.findByRole( 'button', {
+			name: /WordPress.com \/ Pressable/i,
+		} );
+		fireEvent.click( wpcomOption );
 
 		const createNewSiteButton = await screen.findByRole( 'button', {
 			name: /Create a new WordPress.com site ↗/i,
